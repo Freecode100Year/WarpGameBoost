@@ -160,7 +160,7 @@ func run() int {
 		fmt.Println("隧道已建立，但验证失败：", strings.TrimSpace(trace))
 		return 1
 	}
-	fmt.Printf("\n✅ 加速已开启：本机全部网络（包括游戏）经 WARP 入口 %s\n", t.endpoint())
+	fmt.Printf("\n✅ 加速已开启（仅流量模式）：本机全部网络（包括游戏）经 WARP 入口 %s，DNS 保持系统设置\n", t.endpoint())
 	fmt.Println("   现在可以打开游戏。关闭本窗口或按 Ctrl+C 结束加速；输入 r 回车重新优选。")
 	fmt.Println()
 	if *selftest {
@@ -264,7 +264,7 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 	return t, nil
 }
 
-// configure gives the adapter WARP's addresses and Cloudflare DNS and sends all
+// configure gives the adapter WARP's addresses and sends all
 // traffic through it. Two half routes win over the default route without
 // touching it, so closing the adapter restores the network exactly.
 func (t *tunnel) configure(acct *Account) error {
@@ -285,8 +285,10 @@ func (t *tunnel) configure(acct *Account) error {
 			iface.Set()
 		}
 	}
-	t.luid.SetDNS(windows.AF_INET, []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1")}, nil)
-	t.luid.SetDNS(windows.AF_INET6, []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}, nil)
+	// Traffic only: the adapter gets no DNS servers, so Windows keeps resolving
+	// with the system's own DNS settings. Queries to a resolver on the local
+	// network stay local (its on-link route is more specific than the halves
+	// below); queries to a resolver on the internet travel through the tunnel.
 	routes := []*winipcfg.RouteData{
 		{Destination: netip.MustParsePrefix("0.0.0.0/1"), NextHop: netip.IPv4Unspecified()},
 		{Destination: netip.MustParsePrefix("128.0.0.0/1"), NextHop: netip.IPv4Unspecified()},

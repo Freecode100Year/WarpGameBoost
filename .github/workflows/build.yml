@@ -82,6 +82,13 @@ jobs:
           }
           Get-Content out.txt -Encoding utf8
           Get-NetRoute -DestinationPrefix 0.0.0.0/1, 128.0.0.0/1 -ErrorAction SilentlyContinue | Format-Table -AutoSize
+          # Traffic only: the adapter must not carry DNS servers of its own.
+          $dns = (Get-DnsClientServerAddress -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).ServerAddresses
+          "adapter DNS servers: [$($dns -join ', ')]"
+          if ($dns) { Stop-Process -Id $p.Id -Force; throw "adapter has DNS servers: $dns" }
+          $resolved = Resolve-DnsName www.blizzard.com -ErrorAction SilentlyContinue | Select-Object -First 1
+          "system DNS still resolves: $($resolved.Name)"
+          if (-not $resolved) { Stop-Process -Id $p.Id -Force; throw "name resolution broken" }
           Stop-Process -Id $p.Id -Force
           Start-Sleep 3
           if (-not $ok) { throw "system traffic did not go through WARP" }
