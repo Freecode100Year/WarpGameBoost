@@ -21,7 +21,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           '' | Set-Content empty.txt
           $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-count','80','-v' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
-          foreach ($i in 1..90) { Start-Sleep 1; if ((Get-Content out.txt -Raw -Encoding utf8 -ErrorAction SilentlyContinue) -match '加速已开启|验证失败') { break } }
+          foreach ($i in 1..90) { Start-Sleep 1; if ((Get-Content out.txt -Raw -Encoding utf8 -ErrorAction SilentlyContinue) -match '加速已开启|验证失败|连接失败') { break } }
           "ready after $i s"
           function T($name, $sb) { $sw = [Diagnostics.Stopwatch]::StartNew(); $r = & $sb 2>&1 | Out-String; "--- $name ($([int]$sw.ElapsedMilliseconds) ms): $($r.Trim() -replace '\s+',' ')" }
           T 'curl https auto' { curl.exe -s -m 10 https://www.cloudflare.com/cdn-cgi/trace | Select-String 'ip=|warp=' }
@@ -29,6 +29,7 @@ jobs:
           T 'curl ipv4-only site' { curl.exe -s -m 10 -w '%{errormsg}' https://api.ipify.org }
           T 'iwr' { (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 15).Content | Select-String 'ip=|warp=' }
           T 'iwr github' { (Invoke-WebRequest https://github.com -UseBasicParsing -TimeoutSec 15).StatusCode }
+          T 'curl -6' { curl.exe -6 -s -m 10 https://www.cloudflare.com/cdn-cgi/trace | Select-String 'ip=|warp=' }
           T 'dns' { (Resolve-DnsName www.blizzard.com -ErrorAction Continue | Select-Object -First 1).Name }
           Stop-Process -Id $p.Id -Force
           Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' } | Select-Object -Last 25

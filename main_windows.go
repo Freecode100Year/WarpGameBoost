@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -538,6 +539,16 @@ func tcpPing(addr string) (time.Duration, bool) {
 
 func warpTrace() string {
 	client := &http.Client{Timeout: 10 * time.Second}
+	if *v6only {
+		// Go's resolver may hand back only IPv4 addresses here; ask for IPv6.
+		d := &net.Dialer{}
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				return d.DialContext(ctx, "tcp6", addr)
+			},
+			ForceAttemptHTTP2: true,
+		}
+	}
 	for i := 0; i < 3; i++ {
 		resp, err := client.Get("https://www.cloudflare.com/cdn-cgi/trace")
 		if err == nil {
