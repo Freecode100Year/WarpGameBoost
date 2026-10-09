@@ -5,6 +5,10 @@ on:
 jobs:
   debug:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ['-v6only=true', '-v6only=false']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -19,22 +23,13 @@ jobs:
       - shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoSize
-          Find-NetRoute -RemoteIPAddress 168.63.129.16 | Select-Object -Last 1 | Format-List DestinationPrefix,InterfaceAlias,NextHop
           '' | Set-Content empty.txt
-          $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-count','80' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
-          Start-Sleep 45
-          "alive: $(-not $p.HasExited)"
-          Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' } | Select-Object -First 40
-          Find-NetRoute -RemoteIPAddress 168.63.129.16 | Select-Object -Last 1 | Format-List DestinationPrefix,InterfaceAlias
-          Get-NetIPAddress -InterfaceAlias WarpGameBoost | Format-Table IPAddress,AddressState -AutoSize
-          Get-NetRoute -InterfaceAlias WarpGameBoost | Format-Table DestinationPrefix,NextHop,RouteMetric -AutoSize
-          Get-NetIPInterface -InterfaceAlias WarpGameBoost | Format-Table AddressFamily,InterfaceMetric,NlMtu,ConnectionState -AutoSize
+          $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-count','80','${{ matrix.mode }}','-selftest' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
+          foreach ($i in 1..60) { Start-Sleep 1; if ((Get-Content out.txt -Raw -ErrorAction SilentlyContinue) -match '入口 \S+ 没有回应|握手|DEBUG') {} ; if (Get-NetRoute -DestinationPrefix 8000::/1 -ErrorAction SilentlyContinue) { break } }
+          Start-Sleep 4
           "--- ping6"; ping -6 -n 2 2606:4700:4700::1111
-          Clear-DnsClientCache
-          "--- A";    Resolve-DnsName www.cloudflare.com -Type A -ErrorAction Continue | Format-Table -AutoSize
-          "--- AAAA"; Resolve-DnsName www.cloudflare.com -Type AAAA -ErrorAction Continue | Format-Table -AutoSize
-          "--- curl -6"; curl.exe -6 -s -m 10 https://www.cloudflare.com/cdn-cgi/trace
-          "--- curl v6 literal"; curl.exe -s -m 10 "https://[2606:4700:4700::1111]/cdn-cgi/trace"
-          "--- iwr"; try { (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 10).Content } catch { $_.Exception.Message }
-          Stop-Process -Id $p.Id -Force
+          "--- curl -6 -v"; curl.exe -6 -v -s -m 8 https://www.cloudflare.com/cdn-cgi/trace 2>&1 | Select-Object -Last 15
+          "--- curl http v6 literal"; curl.exe -v -s -m 8 "http://[2606:4700:4700::1111]/cdn-cgi/trace" 2>&1 | Select-Object -Last 15
+          "--- curl -4"; curl.exe -4 -s -m 8 https://www.cloudflare.com/cdn-cgi/trace 2>&1 | Select-String 'ip=|warp='
+          $p.WaitForExit(60000) | Out-Null
+          Get-Content out.txt -Encoding utf8
