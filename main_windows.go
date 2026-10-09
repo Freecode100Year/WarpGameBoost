@@ -90,13 +90,15 @@ func run() int {
 	}
 
 	physIndex6 = defaultInterface(winipcfg.AddressFamily(windows.AF_INET6), 0)
+	if physIndex6 == 0 && !*allowV4 {
+		// Without IPv6 the only way in is IPv4; say so and carry on rather than
+		// make the user restart with a flag.
+		fmt.Println("本机没有 IPv6 网络，改用 IPv4 入口。")
+		fmt.Println()
+		*allowV4 = true
+	}
 	if *allowV4 {
 		physIndex4 = defaultInterface(winipcfg.AddressFamily(windows.AF_INET), 0)
-	}
-	if physIndex6 == 0 && !*allowV4 {
-		fmt.Println("本机没有 IPv6 网络。本程序默认只走 IPv6 入口；")
-		fmt.Println("可以换有 IPv6 的网络，或加参数 -ipv4 同时使用 IPv4 入口。")
-		return 1
 	}
 
 	results := optimize(acct, "")
@@ -141,7 +143,7 @@ func run() int {
 
 func optimize(acct *Account, current string) []scored {
 	fmt.Println("正在优选 WARP 入口（约 20 秒）…")
-	results := scan(acct, *count, *allowV4, true, current)
+	results := scan(acct, *count, *allowV4, physIndex6 != 0, current)
 	fmt.Printf("可用入口 %d 个，前五名：\n", len(results))
 	fmt.Println("   入口                                        延迟    抖动   丢包")
 	for i, r := range results {
