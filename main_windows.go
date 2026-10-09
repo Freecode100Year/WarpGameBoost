@@ -39,6 +39,7 @@ var (
 	allowV4  = flag.Bool("ipv4", false, "也使用 IPv4 入口（默认只用 IPv6 入口）")
 	count    = flag.Int("count", 200, "每次优选测试的入口数量")
 	selftest = flag.Bool("selftest", false, "连接、验证后立即退出（用于自动测试）")
+	verbose  = flag.Bool("v", false, "显示 WireGuard 调试日志")
 )
 
 // physIndex is the interface the tunnel's own UDP packets leave through; probes
@@ -194,7 +195,11 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 	}
 	t := &tunnel{luid: winipcfg.LUID(tdev.(*tun.NativeTun).LUID())}
 	t.bind = conn.NewDefaultBind()
-	t.dev = device.NewDevice(tdev, t.bind, device.NewLogger(device.LogLevelSilent, ""))
+	level := device.LogLevelSilent
+	if *verbose {
+		level = device.LogLevelVerbose
+	}
+	t.dev = device.NewDevice(tdev, t.bind, device.NewLogger(level, "wg: "))
 	priv, _ := base64.StdEncoding.DecodeString(acct.PrivateKey)
 	peer, _ := base64.StdEncoding.DecodeString(acct.PeerKey)
 	t.key = hex.EncodeToString(peer)
