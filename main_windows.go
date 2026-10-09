@@ -175,9 +175,12 @@ func run() int {
 			return 1
 		}
 	}
-	fmt.Printf("\n✅ 加速已开启（仅流量模式）：本机全部网络（包括游戏）经 WARP 入口 %s，DNS 保持系统设置\n", t.endpoint())
+	fmt.Printf("\n✅ 加速已开启：本机全部网络（包括游戏）经 WARP 入口 %s\n", t.endpoint())
 	if *v6only {
-		fmt.Printf("   出口仅 IPv6（%s），IPv4 已禁用；只有 IPv4 的网站和游戏会连不上，玩守望先锋请加 -v6only=false\n", traceField(trace, "ip"))
+		fmt.Printf("   出口仅 IPv6（%s），IPv4 已禁用，DNS 经隧道用 Cloudflare。\n", traceField(trace, "ip"))
+		fmt.Println("   只有 IPv4 的网站和游戏会连不上；玩守望先锋请加参数 -v6only=false。")
+	} else {
+		fmt.Println("   仅流量模式：DNS 保持系统设置。")
 	}
 	fmt.Println("   现在可以打开游戏。关闭本窗口或按 Ctrl+C 结束加速；输入 r 回车重新优选。")
 	fmt.Println()
