@@ -537,6 +537,9 @@ func warpTrace() string {
 			resp.Body.Close()
 			return string(b)
 		}
+		if *verbose {
+			fmt.Println("验证请求失败：", err)
+		}
 		time.Sleep(2 * time.Second)
 	}
 	return ""
