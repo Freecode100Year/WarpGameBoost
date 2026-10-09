@@ -83,11 +83,15 @@ jobs:
           Get-Content out.txt -Encoding utf8
           Get-NetRoute -DestinationPrefix 0.0.0.0/1, 128.0.0.0/1 -ErrorAction SilentlyContinue | Format-Table -AutoSize
           # Traffic only: the adapter must not carry DNS servers of its own.
-          $dns = (Get-DnsClientServerAddress -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).ServerAddresses
+          # (fec0:0:0:ffff::1-3 are the placeholders Windows shows on every IPv6
+          # interface without DNS servers; they are not ours.)
+          $dns = (Get-DnsClientServerAddress -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).ServerAddresses | Where-Object { $_ -notlike 'fec0:0:0:ffff::*' }
           "adapter DNS servers: [$($dns -join ', ')]"
           if ($dns) { Stop-Process -Id $p.Id -Force; throw "adapter has DNS servers: $dns" }
+          Clear-DnsClientCache
+          $sw = [Diagnostics.Stopwatch]::StartNew()
           $resolved = Resolve-DnsName www.blizzard.com -ErrorAction SilentlyContinue | Select-Object -First 1
-          "system DNS still resolves: $($resolved.Name)"
+          "system DNS still resolves: $($resolved.Name) in $($sw.ElapsedMilliseconds) ms"
           if (-not $resolved) { Stop-Process -Id $p.Id -Force; throw "name resolution broken" }
           Stop-Process -Id $p.Id -Force
           Start-Sleep 3
