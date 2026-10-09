@@ -218,9 +218,7 @@ type tunnel struct {
 // network Windows is on.
 func (t *tunnel) refreshDNS() {
 	if t.reject != nil {
-		dns := systemDNS4(t.luid)
-		t.reject.setAllowed(dns)
-		t.luid.SetDNS(windows.AF_INET, dns, nil)
+		t.reject.setAllowed(systemDNS4(t.luid))
 	}
 }
 
@@ -326,9 +324,13 @@ func (t *tunnel) configure(acct *Account) error {
 	}
 	// Windows only returns IPv6 addresses for a name when the interface the
 	// query went out on has IPv6. On an IPv4-only network that is never the
-	// real adapter, so with -v6only the tunnel carries a copy of the system's
-	// own DNS servers: the same resolvers, asked from an interface with IPv6.
-	t.refreshDNS()
+	// real adapter, so with -v6only the tunnel gets Cloudflare's resolver at
+	// its IPv6 addresses, asked through the tunnel.
+	if *v6only {
+		if err := t.luid.SetDNS(windows.AF_INET6, v6DNS, nil); err != nil {
+			return fmt.Errorf("设置 DNS：%w", err)
+		}
+	}
 	// Traffic only: the adapter gets no DNS servers, so Windows keeps resolving
 	// with the system's own DNS settings. Queries to a resolver on the local
 	// network stay local (its on-link route is more specific than the halves
@@ -492,6 +494,8 @@ func (t *tunnel) reoptimize(acct *Account, acctPath string) {
 	acct.Best, acct.BestRTTms, acct.ScannedAt = results[0].Endpoint, int(results[0].RTT.Milliseconds()), time.Now()
 	saveAccount(acctPath, acct)
 }
+
+var v6DNS = []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}
 
 func pingTarget() string {
 	if *v6only {
