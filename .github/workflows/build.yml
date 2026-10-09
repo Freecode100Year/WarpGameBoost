@@ -34,6 +34,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "selftest failed" }
           Start-Sleep 2
           if (Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue) { throw "adapter left behind" }
+      - name: Self-test without -ipv4 on a machine with no IPv6 (falls back to IPv4 entries)
+        shell: pwsh
+        run: |
+          .\WarpGameBoost.exe -selftest -count 80
+          if ($LASTEXITCODE -ne 0) { throw "selftest without IPv6 failed" }
       - name: Whole-system traffic goes through WARP, and a killed process leaves no adapter
         shell: pwsh
         run: |
