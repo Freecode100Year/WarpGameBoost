@@ -156,6 +156,9 @@ func run() int {
 		fmt.Println("\n加速已关闭，网络已恢复。")
 	}()
 
+	if *verbose {
+		fmt.Println(time.Now().Format("15:04:05.000"), "开始验证")
+	}
 	trace := warpTrace()
 	if !strings.Contains(trace, "warp=on") {
 		fmt.Println("隧道已建立，但验证失败：", strings.TrimSpace(trace))
@@ -538,7 +541,7 @@ func warpTrace() string {
 			return string(b)
 		}
 		if *verbose {
-			fmt.Println("验证请求失败：", err)
+			fmt.Println(time.Now().Format("15:04:05.000"), "验证请求失败：", err)
 		}
 		time.Sleep(2 * time.Second)
 	}
