@@ -218,7 +218,9 @@ type tunnel struct {
 // network Windows is on.
 func (t *tunnel) refreshDNS() {
 	if t.reject != nil {
-		t.reject.setAllowed(systemDNS4())
+		dns := systemDNS4(t.luid)
+		t.reject.setAllowed(dns)
+		t.luid.SetDNS(windows.AF_INET, dns, nil)
 	}
 }
 
@@ -247,9 +249,9 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 	var dev tun.Device = tdev
 	if *v6only {
 		t.reject = &v4Reject{Device: tdev}
-		t.reject.setAllowed(systemDNS4())
+		t.reject.setAllowed(systemDNS4(t.luid))
 		if *verbose {
-			fmt.Println("经隧道放行的 IPv4 DNS：", systemDNS4())
+			fmt.Println("经隧道放行的 IPv4 DNS：", systemDNS4(t.luid))
 		}
 		dev = t.reject
 	}
@@ -322,6 +324,11 @@ func (t *tunnel) configure(acct *Account) error {
 			iface.Set()
 		}
 	}
+	// Windows only returns IPv6 addresses for a name when the interface the
+	// query went out on has IPv6. On an IPv4-only network that is never the
+	// real adapter, so with -v6only the tunnel carries a copy of the system's
+	// own DNS servers: the same resolvers, asked from an interface with IPv6.
+	t.refreshDNS()
 	// Traffic only: the adapter gets no DNS servers, so Windows keeps resolving
 	// with the system's own DNS settings. Queries to a resolver on the local
 	// network stay local (its on-link route is more specific than the halves
@@ -496,7 +503,7 @@ func pingTarget() string {
 // systemDNS4 lists the IPv4 DNS servers Windows is using. With -v6only they
 // stay reachable through the tunnel, or names would stop resolving on networks
 // that hand out a public resolver.
-func systemDNS4() []netip.Addr {
+func systemDNS4(skip winipcfg.LUID) []netip.Addr {
 	adapters, err := winipcfg.GetAdaptersAddresses(windows.AF_INET, winipcfg.GAAFlagDefault)
 	if err != nil {
 		return nil
@@ -504,7 +511,7 @@ func systemDNS4() []netip.Addr {
 	seen := map[netip.Addr]bool{}
 	var out []netip.Addr
 	for _, ad := range adapters {
-		if ad.OperStatus != winipcfg.IfOperStatusUp {
+		if ad.OperStatus != winipcfg.IfOperStatusUp || ad.LUID == skip {
 			continue
 		}
 		for d := ad.FirstDNSServerAddress; d != nil; d = d.Next {
