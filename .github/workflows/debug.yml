@@ -25,7 +25,8 @@ jobs:
           $ErrorActionPreference = 'Continue'
           '' | Set-Content empty.txt
           $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-count','80','${{ matrix.mode }}','-v' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
-          foreach ($i in 1..90) { Start-Sleep 1; if ((Get-Content out.txt -Raw -Encoding utf8 -ErrorAction SilentlyContinue) -match 'Interface state was Down, requested Up') { break } }
+          foreach ($i in 1..90) { Start-Sleep 1; if (Get-NetRoute -DestinationPrefix 8000::/1 -ErrorAction SilentlyContinue) { break } }
+          Start-Sleep 3
           "ready after $i s"
           pktmon filter add -p 443
           pktmon start --capture --comp nics --pkt-size 0 -f cap.etl | Out-Null
@@ -37,5 +38,5 @@ jobs:
           pktmon stop | Out-Null
           pktmon etl2txt cap.etl -o cap.txt | Out-Null
           Get-Content cap.txt | Select-String '2606' | Select-Object -First 40
-          Stop-Process -Id $p.Id -Force
+          $p.WaitForExit(90000) | Out-Null
           Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' }
