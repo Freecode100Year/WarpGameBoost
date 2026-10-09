@@ -45,6 +45,7 @@ var (
 	selftest = flag.Bool("selftest", false, "连接、验证后立即退出（用于自动测试）")
 	verbose  = flag.Bool("v", false, "显示 WireGuard 调试日志")
 	showVer  = flag.Bool("version", false, "显示版本号后退出")
+	v6only   = flag.Bool("v6only", true, "出口只走 IPv6，禁用 IPv4；只有 IPv4 的游戏（如守望先锋）要加 -v6only=false")
 )
 
 // physIndex is the interface the tunnel's own UDP packets leave through; probes
@@ -160,7 +161,20 @@ func run() int {
 		fmt.Println("隧道已建立，但验证失败：", strings.TrimSpace(trace))
 		return 1
 	}
+	if *v6only {
+		if _, ok := tcpPing("1.1.1.1:443"); ok {
+			fmt.Println("IPv4 仍然可以访问，禁用失败。")
+			return 1
+		}
+		if !strings.Contains(traceField(trace, "ip"), ":") {
+			fmt.Println("出口不是 IPv6：", strings.TrimSpace(trace))
+			return 1
+		}
+	}
 	fmt.Printf("\n✅ 加速已开启（仅流量模式）：本机全部网络（包括游戏）经 WARP 入口 %s，DNS 保持系统设置\n", t.endpoint())
+	if *v6only {
+		fmt.Printf("   出口仅 IPv6（%s），IPv4 已禁用；只有 IPv4 的网站和游戏会连不上，玩守望先锋请加 -v6only=false\n", traceField(trace, "ip"))
+	}
 	fmt.Println("   现在可以打开游戏。关闭本窗口或按 Ctrl+C 结束加速；输入 r 回车重新优选。")
 	fmt.Println()
 	if *selftest {
@@ -220,8 +234,8 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 	priv, _ := base64.StdEncoding.DecodeString(acct.PrivateKey)
 	peer, _ := base64.StdEncoding.DecodeString(acct.PeerKey)
 	t.key = hex.EncodeToString(peer)
-	cfg := fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\npersistent_keepalive_interval=25\n",
-		hex.EncodeToString(priv), t.key, results[0].Endpoint)
+	cfg := fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=%s\n%spersistent_keepalive_interval=25\n",
+		hex.EncodeToString(priv), t.key, results[0].Endpoint, allowedIPs())
 	if err := t.dev.IpcSet(cfg); err != nil {
 		t.dev.Close()
 		return nil, err
@@ -364,7 +378,7 @@ func (t *tunnel) waitHandshake(limit time.Duration) bool {
 // its old session so the next packet handshakes with the new endpoint at once.
 func (t *tunnel) roam(endpoint string) bool {
 	time.Sleep(40 * time.Millisecond) // keep the handshake timestamp newer than the probes'
-	cfg := fmt.Sprintf("public_key=%s\nremove=true\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\npersistent_keepalive_interval=25\n", t.key, t.key, endpoint)
+	cfg := fmt.Sprintf("public_key=%s\nremove=true\npublic_key=%s\nendpoint=%s\n%spersistent_keepalive_interval=25\n", t.key, t.key, endpoint, allowedIPs())
 	if t.dev.IpcSet(cfg) != nil {
 		return false
 	}
@@ -407,7 +421,7 @@ func (t *tunnel) loop(acct *Account, acctPath string) {
 			if t.followNetwork() {
 				fmt.Printf("\n网络已变化，隧道改走新的网卡。\n")
 			}
-			rtt, ok := tcpPing("1.1.1.1:443")
+			rtt, ok := tcpPing(pingTarget())
 			age := t.handshakeAge()
 			if ok {
 				fails = 0
@@ -441,6 +455,64 @@ func (t *tunnel) reoptimize(acct *Account, acctPath string) {
 	}
 	acct.Best, acct.BestRTTms, acct.ScannedAt = results[0].Endpoint, int(results[0].RTT.Milliseconds()), time.Now()
 	saveAccount(acctPath, acct)
+}
+
+func pingTarget() string {
+	if *v6only {
+		return "[2606:4700:4700::1111]:443"
+	}
+	return "1.1.1.1:443"
+}
+
+// allowedIPs is what the tunnel accepts from this side. With -v6only IPv4 is
+// still routed into the tunnel, so nothing leaks around it, but WireGuard drops
+// it for want of a peer. The system's IPv4 DNS servers are the exception, or
+// names would stop resolving on networks that hand out a public resolver.
+func allowedIPs() string {
+	if !*v6only {
+		return "allowed_ip=0.0.0.0/0\nallowed_ip=::/0\n"
+	}
+	var b strings.Builder
+	b.WriteString("allowed_ip=::/0\n")
+	for _, a := range systemDNS4() {
+		fmt.Fprintf(&b, "allowed_ip=%s/32\n", a)
+	}
+	return b.String()
+}
+
+func systemDNS4() []netip.Addr {
+	adapters, err := winipcfg.GetAdaptersAddresses(windows.AF_INET, winipcfg.GAAFlagDefault)
+	if err != nil {
+		return nil
+	}
+	seen := map[netip.Addr]bool{}
+	var out []netip.Addr
+	for _, ad := range adapters {
+		if ad.OperStatus != winipcfg.IfOperStatusUp {
+			continue
+		}
+		for d := ad.FirstDNSServerAddress; d != nil; d = d.Next {
+			a, ok := netip.AddrFromSlice(d.Address.IP())
+			if !ok {
+				continue
+			}
+			a = a.Unmap()
+			if a.Is4() && !a.IsLoopback() && !a.IsUnspecified() && !seen[a] {
+				seen[a] = true
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+func traceField(trace, key string) string {
+	for _, line := range strings.Split(trace, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 func tcpPing(addr string) (time.Duration, bool) {
