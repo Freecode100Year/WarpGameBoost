@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/netip"
@@ -19,10 +20,10 @@ var (
 	icmpSendEcho    = iphlpapi.NewProc("IcmpSendEcho")
 )
 
-// blizzardHost is Battle.net's US service. It is not the match server (those
-// are not published), so its latency is a reference for the route towards
-// Blizzard, not the in-game ping.
-const blizzardHost = "us.actual.battle.net:1119"
+// blizzardHost is Blizzard's Overwatch website, served from AWS in Virginia.
+// It is not a match server (those are not published), so its latency is a
+// reference for the route towards Blizzard's US East, not the in-game ping.
+const blizzardHost = "overwatch.blizzard.com"
 
 type ipOptionInformation struct {
 	TTL, TOS, Flags, OptionsSize uint8
@@ -120,10 +121,10 @@ func diagnose() *series {
 			break
 		}
 	}
-	if ips, err := net.LookupIP("us.actual.battle.net"); err == nil {
+	if ips, err := net.LookupIP(blizzardHost); err == nil {
 		for _, ip := range ips {
 			if ip.To4() != nil {
-				target = &series{name: "→ 暴雪（战网美国）"}
+				target = &series{name: "→ 暴雪（美东）"}
 				break
 			}
 		}
@@ -156,8 +157,8 @@ func diagnose() *series {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Blizzard does not answer pings; a TCP handshake times the round
-			// trip just as well. Half the samples, to stay polite.
+			// Blizzard does not answer pings; a TLS hello times the round
+			// trip instead. Half the samples, to stay polite.
 			tick := time.NewTicker(2 * interval)
 			defer tick.Stop()
 			for i := 0; i < samples/2; i++ {
@@ -174,14 +175,44 @@ func diagnose() *series {
 	return target
 }
 
-// sample times one TCP handshake with Blizzard.
+// sample times one round trip to Blizzard: from sending a TLS hello to the
+// first byte of the answer. A TCP handshake alone would not do, because WARP
+// completes handshakes at its own edge, in a few milliseconds, whatever the
+// distance to the real server.
 func (s *series) sample() {
 	s.sent++
-	start := time.Now()
-	if c, err := net.DialTimeout("tcp4", blizzardHost, time.Second); err == nil {
-		s.rtts = append(s.rtts, time.Since(start))
-		c.Close()
+	c, err := net.DialTimeout("tcp4", blizzardHost+":443", time.Second)
+	if err != nil {
+		return
 	}
+	defer c.Close()
+	tc := &timedConn{Conn: c}
+	c.SetDeadline(time.Now().Add(time.Second))
+	tls.Client(tc, &tls.Config{ServerName: blizzardHost}).Handshake()
+	if !tc.answered.IsZero() {
+		s.rtts = append(s.rtts, tc.answered.Sub(tc.sent))
+	}
+}
+
+// timedConn notes when the first bytes went out and when the first came back.
+type timedConn struct {
+	net.Conn
+	sent, answered time.Time
+}
+
+func (c *timedConn) Write(b []byte) (int, error) {
+	if c.sent.IsZero() {
+		c.sent = time.Now()
+	}
+	return c.Conn.Write(b)
+}
+
+func (c *timedConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 && c.answered.IsZero() {
+		c.answered = time.Now()
+	}
+	return n, err
 }
 
 // compareWarp measures the same Blizzard server through the tunnel and sets
