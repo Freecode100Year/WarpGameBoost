@@ -209,6 +209,16 @@ type tunnel struct {
 	key  string
 	mu   sync.Mutex
 	ep   string
+
+	reject *v4Reject // set with -v6only
+}
+
+// refreshDNS keeps the IPv4 DNS servers let through -v6only in step with the
+// network Windows is on.
+func (t *tunnel) refreshDNS() {
+	if t.reject != nil {
+		t.reject.setAllowed(systemDNS4())
+	}
 }
 
 func (t *tunnel) endpoint() string { t.mu.Lock(); defer t.mu.Unlock(); return t.ep }
@@ -233,12 +243,21 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 	if *verbose {
 		level = device.LogLevelVerbose
 	}
-	t.dev = device.NewDevice(tdev, t.bind, device.NewLogger(level, "wg: "))
+	var dev tun.Device = tdev
+	if *v6only {
+		t.reject = &v4Reject{Device: tdev}
+		t.reject.setAllowed(systemDNS4())
+		if *verbose {
+			fmt.Println("经隧道放行的 IPv4 DNS：", systemDNS4())
+		}
+		dev = t.reject
+	}
+	t.dev = device.NewDevice(dev, t.bind, device.NewLogger(level, "wg: "))
 	priv, _ := base64.StdEncoding.DecodeString(acct.PrivateKey)
 	peer, _ := base64.StdEncoding.DecodeString(acct.PeerKey)
 	t.key = hex.EncodeToString(peer)
-	cfg := fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=%s\n%spersistent_keepalive_interval=25\n",
-		hex.EncodeToString(priv), t.key, results[0].Endpoint, allowedIPs())
+	cfg := fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\npersistent_keepalive_interval=25\n",
+		hex.EncodeToString(priv), t.key, results[0].Endpoint)
 	if err := t.dev.IpcSet(cfg); err != nil {
 		t.dev.Close()
 		return nil, err
@@ -381,7 +400,7 @@ func (t *tunnel) waitHandshake(limit time.Duration) bool {
 // its old session so the next packet handshakes with the new endpoint at once.
 func (t *tunnel) roam(endpoint string) bool {
 	time.Sleep(40 * time.Millisecond) // keep the handshake timestamp newer than the probes'
-	cfg := fmt.Sprintf("public_key=%s\nremove=true\npublic_key=%s\nendpoint=%s\n%spersistent_keepalive_interval=25\n", t.key, t.key, endpoint, allowedIPs())
+	cfg := fmt.Sprintf("public_key=%s\nremove=true\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\npersistent_keepalive_interval=25\n", t.key, t.key, endpoint)
 	if t.dev.IpcSet(cfg) != nil {
 		return false
 	}
@@ -423,6 +442,7 @@ func (t *tunnel) loop(acct *Account, acctPath string) {
 		case <-tick.C:
 			if t.followNetwork() {
 				fmt.Printf("\n网络已变化，隧道改走新的网卡。\n")
+				t.refreshDNS()
 			}
 			rtt, ok := tcpPing(pingTarget())
 			age := t.handshakeAge()
@@ -445,6 +465,7 @@ func (t *tunnel) loop(acct *Account, acctPath string) {
 func (t *tunnel) reoptimize(acct *Account, acctPath string) {
 	fmt.Println()
 	t.followNetwork()
+	t.refreshDNS()
 	results := optimize(acct, t.endpoint())
 	if len(results) == 0 {
 		fmt.Println("没有找到可用入口，保持当前入口。")
@@ -467,25 +488,9 @@ func pingTarget() string {
 	return "1.1.1.1:443"
 }
 
-// allowedIPs is what the tunnel accepts from this side. With -v6only IPv4 is
-// still routed into the tunnel, so nothing leaks around it, but WireGuard drops
-// it for want of a peer. The system's IPv4 DNS servers are the exception, or
-// names would stop resolving on networks that hand out a public resolver.
-func allowedIPs() string {
-	if !*v6only {
-		return "allowed_ip=0.0.0.0/0\nallowed_ip=::/0\n"
-	}
-	var b strings.Builder
-	b.WriteString("allowed_ip=::/0\n")
-	if *verbose {
-		fmt.Println("经隧道放行的 IPv4 DNS：", systemDNS4())
-	}
-	for _, a := range systemDNS4() {
-		fmt.Fprintf(&b, "allowed_ip=%s/32\n", a)
-	}
-	return b.String()
-}
-
+// systemDNS4 lists the IPv4 DNS servers Windows is using. With -v6only they
+// stay reachable through the tunnel, or names would stop resolving on networks
+// that hand out a public resolver.
 func systemDNS4() []netip.Addr {
 	adapters, err := winipcfg.GetAdaptersAddresses(windows.AF_INET, winipcfg.GAAFlagDefault)
 	if err != nil {

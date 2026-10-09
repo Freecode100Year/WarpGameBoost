@@ -5,10 +5,6 @@ on:
 jobs:
   debug:
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: ['-v6only=true']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -24,23 +20,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           '' | Set-Content empty.txt
-          $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-count','80','${{ matrix.mode }}','-v' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
-          foreach ($i in 1..90) { Start-Sleep 1; if (Get-NetRoute -DestinationPrefix 8000::/1 -ErrorAction SilentlyContinue) { break } }
-          Start-Sleep 3
-          "ready after $i s"; $sw = [Diagnostics.Stopwatch]::StartNew()
-          pktmon filter add -i 2606:4700:4700::1111; pktmon filter add -i 2606:4700::6810:7b60; pktmon filter add -i 2606:4700::6810:7c60
-          pktmon start --capture --comp all --pkt-size 0 -f cap.etl | Out-Null
-          "--- tnc v6"; $c = New-Object Net.Sockets.TcpClient([Net.Sockets.AddressFamily]::InterNetworkV6); try { $c.ConnectAsync('2606:4700:4700::1111', 443).Wait(5000); "connected: $($c.Connected)" } catch { $_.Exception.InnerException.Message }
-          "routes: $((Get-NetRoute -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).DestinationPrefix -join ',') status: $((Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue).Status) t=$([int]$sw.Elapsed.TotalSeconds)"
-          "--- ping6"; ping -6 -n 2 2606:4700:4700::1111
-          "routes: $((Get-NetRoute -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).DestinationPrefix -join ',') status: $((Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue).Status) t=$([int]$sw.Elapsed.TotalSeconds)"
-          "--- http -6"; curl.exe -6 -s -m 6 -o NUL -w "%{http_code} %{size_download}`n" http://www.cloudflare.com/cdn-cgi/trace
-          "--- curl -6 -v"; curl.exe -6 -v -s -m 8 https://www.cloudflare.com/cdn-cgi/trace 2>&1 | Select-Object -Last 15
-          "routes: $((Get-NetRoute -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).DestinationPrefix -join ',') status: $((Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue).Status) t=$([int]$sw.Elapsed.TotalSeconds)"
-          "--- curl http v6 literal"; curl.exe -v -s -m 8 "http://[2606:4700:4700::1111]/cdn-cgi/trace" 2>&1 | Select-Object -Last 15
-          "--- curl -4"; curl.exe -4 -s -m 8 https://www.cloudflare.com/cdn-cgi/trace 2>&1 | Select-String 'ip=|warp='
-          pktmon stop | Out-Null
-          pktmon etl2txt cap.etl -o cap.txt | Out-Null
-          Get-Content cap.txt | Select-String 'length' | ForEach-Object { $_.Line -replace '^.*ethertype','' } | Select-Object -First 80
-          $p.WaitForExit(90000) | Out-Null
-          Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' -or $_ -match 'Sending|Received|Retrying' } | Select-Object -Last 60
+          $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-count','80','-v' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
+          foreach ($i in 1..90) { Start-Sleep 1; if ((Get-Content out.txt -Raw -Encoding utf8 -ErrorAction SilentlyContinue) -match '加速已开启|验证失败') { break } }
+          "ready after $i s"
+          function T($name, $sb) { $sw = [Diagnostics.Stopwatch]::StartNew(); $r = & $sb 2>&1 | Out-String; "--- $name ($([int]$sw.ElapsedMilliseconds) ms): $($r.Trim() -replace '\s+',' ')" }
+          T 'curl https auto' { curl.exe -s -m 10 https://www.cloudflare.com/cdn-cgi/trace | Select-String 'ip=|warp=' }
+          T 'curl -4' { curl.exe -4 -s -m 10 -w '%{errormsg}' https://www.cloudflare.com/cdn-cgi/trace }
+          T 'curl ipv4-only site' { curl.exe -s -m 10 -w '%{errormsg}' https://api.ipify.org }
+          T 'iwr' { (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 15).Content | Select-String 'ip=|warp=' }
+          T 'iwr github' { (Invoke-WebRequest https://github.com -UseBasicParsing -TimeoutSec 15).StatusCode }
+          T 'dns' { (Resolve-DnsName www.blizzard.com -ErrorAction Continue | Select-Object -First 1).Name }
+          Stop-Process -Id $p.Id -Force
+          Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' } | Select-Object -Last 25
