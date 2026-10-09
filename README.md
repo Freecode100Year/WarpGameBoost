@@ -1,36 +1,77 @@
 # WarpGameBoost
 
-**Windows 上一键开启 Cloudflare WARP 游戏加速：自动优选 IPv6 入口，游戏流量（UDP）也走加速。**
+**Windows 一键 Cloudflare WARP 游戏加速：自动挑出最稳的入口，游戏的 UDP 流量也走加速，关掉窗口就恢复原网络。**
 
 ## 解决什么问题
 
-- **家里宽带打游戏时延迟忽高忽低、偶尔丢包**：运营商到游戏服务器的线路不一定好。经 Cloudflare 的网络转一下，往往更稳。
-- **官方 WARP 客户端不能选入口**：它连哪个入口就是哪个，入口拥堵也不会换。本程序先用真正的 WireGuard 握手测一遍延迟、抖动和丢包，再连最好的那个。
-- **浏览器代理管不到游戏**：游戏不认代理，对战数据走 UDP。本程序建一块虚拟网卡，整台电脑的流量（包括游戏）都经过 WARP。
+- **打游戏延迟忽高忽低、偶尔丢包。** 运营商到游戏服务器的线路不一定好，换走 Cloudflare 的网络往往更稳。
+- **官方 WARP 客户端不能选入口。** 分到哪个入口就用哪个，入口拥堵也不会换。本程序先用真正的 WireGuard 握手测一遍候选入口的**延迟、抖动、丢包**，再连综合最稳的那个。
+- **代理加速对游戏无效。** 游戏不认代理，对战数据走 UDP。本程序建一块虚拟网卡，整台电脑的流量（包括游戏）都经过 WARP。
+- **不想装一堆东西。** 单个 exe，不用安装、不常驻后台、不改系统设置，关掉就和没用过一样。
 
-## 怎么用
+## 使用方法
 
-1. 从 [Releases](../../releases/latest) 下载 `WarpGameBoost.exe`。
-2. 双击运行，同意管理员权限（建虚拟网卡需要）。
-3. 等约 20 秒：自动注册免费 WARP 账号 → 优选入口 → 显示“✅ 加速已开启”。
-4. 打开游戏。窗口里每 5 秒显示一次经隧道到 Cloudflare 的延迟。
-5. 不玩了就关掉窗口（或按 Ctrl+C），网络立即恢复原样。
+1. 从 [Releases](https://github.com/Freecode100Year/WarpGameBoost/releases/latest) 下载 `WarpGameBoost.exe`。
+2. 双击运行，弹出管理员权限提示时点“是”（建虚拟网卡需要）。
+3. 等约 20 秒，窗口里依次出现：
+   - 正在注册免费 WARP 账号（只有第一次）
+   - 优选结果：前五名入口的延迟、抖动、丢包
+   - **✅ 加速已开启**
+4. 打开游戏。窗口每 5 秒显示一次经隧道到 Cloudflare 的延迟。
+5. 不玩了就关闭窗口。
 
-窗口里输入 `r` 回车可重新优选；当前入口失效时会自动换。
+### 开着与关闭
+
+| 操作 | 结果 |
+| :--- | :--- |
+| 窗口开着（可以最小化） | 加速有效 |
+| 关闭窗口 / 按 Ctrl+C / 输入 `q` 回车 | 加速停止，虚拟网卡删除，网络恢复原样 |
+| 输入 `r` 回车 | 重新优选入口 |
+
+**打游戏时窗口不能关**，最小化即可。加速线路由这个程序维持，程序退出线路就断。
+
+### 自动处理的情况
+
+- **本机没有 IPv6**：自动改用 IPv4 入口，不用加参数。
+- **当前入口失效**（连续 15 秒不通，或 3 分钟没有握手）：自动重新优选并切换。
+- **网络变了**（Wi-Fi 重连、插上网线、电脑睡眠后唤醒）：隧道自动改走新的网卡。
+- **重复打开**：提示“已经在运行”，不会开第二个。
+- **程序被强制结束或崩溃**：虚拟网卡和路由由系统随之清除，网络自动恢复。
+
+### 参数
+
+| 参数 | 作用 |
+| :--- | :--- |
+| `-ipv4` | 有 IPv6 时也同时测试 IPv4 入口（默认有 IPv6 就只用 IPv6 入口） |
+| `-count 200` | 每次优选测试的入口数量 |
+
+## 效果怎么判断
+
+加速**不一定更快**。如果你的宽带到游戏服务器本来就是直达好线路，绕一下 Cloudflare 可能持平甚至略慢。建议实测：
+
+- 守望先锋：按 **Ctrl+Shift+N** 打开网络图，看延迟（RTT）和丢包。
+- 开加速和不开各打几局对比，哪个稳用哪个。
 
 ## 需要知道的
 
-- **优先只用 IPv6 入口**；本机没有 IPv6 时自动改用 IPv4 入口，不用另加参数。有 IPv6 时也想同时测 IPv4 入口，加参数 `-ipv4`。
-- **加速是全局的**：开着它时整台电脑都经过 WARP，网站和游戏看到的是 Cloudflare 的地址，游戏可能按新地址判断地区。
-- **不一定更快**：线路本来就好的话，绕一下 Cloudflare 可能持平甚至略慢。先在游戏里看网络图（守望先锋按 Ctrl+Shift+N），开关各打几局对比。
-- **Cloudflare 能看到你连了哪些服务器**（看不到加密内容）。
+- **整台电脑都走 WARP**：开着时网站和游戏看到的是 Cloudflare 的地址，游戏可能按这个地址判断地区。在美国打美服，出口也在美国，影响不大。
+- **Cloudflare 能看到你连了哪些服务器**，看不到加密的内容。
+- **域名解析**：虚拟网卡使用 Cloudflare DNS（1.1.1.1）且优先级最高，但 Windows 有时会同时向原网卡的 DNS 发查询。这个程序是游戏加速，不是隐私工具。
+- **不要同时开其他 VPN 或官方 WARP 客户端**，它们会争抢路由。
 - 免费账号注册使用 WARP 官方 App 的同一接口（非公开 API），Cloudflare 可能随时更改或限制。
-- 程序意外退出时，虚拟网卡和路由由系统随之清除，网络自动恢复。
+- 部分杀毒软件可能对虚拟网卡驱动或网络程序误报。
+
+## 工作原理
+
+1. **优选**：从 Cloudflare WARP 的入口地址段（IPv6 `2606:4700:d0::/48`、`d1::/48`，必要时 IPv4 `162.159.192–195.x`、`188.114.96–99.x`）和 50 多个 UDP 端口中随机抽约 200 个，每个发 5 次 WireGuard 握手，按“平均延迟 + 2×抖动 + 丢包”打分。
+   - 所有探测包用同一把密钥，而 WARP 服务器会丢弃时间戳不比上一次新的握手。程序保证每个探测包的时间戳都比之前的新，否则会把服务器的丢弃误判成入口丢包（v0.2.0 修复前约每 5 次误判 1 次）。
+2. **隧道**：用 [wireguard-go](https://git.zx2c4.com/wireguard-go) 和 WireGuard 官方的 [Wintun](https://www.wintun.net/) 虚拟网卡建立隧道，MTU 1280。
+3. **路由**：加 `0.0.0.0/1`、`128.0.0.0/1`、`::/1`、`8000::/1` 四条路由，盖过默认路由但不修改它；隧道自己的 UDP 包绑定在实体网卡上发出。关闭虚拟网卡，这些路由随之消失。
 
 ## 文件
 
-- `%LOCALAPPDATA%\WarpGameBoost\account.json`：WARP 账号和上次的优选结果。
-- `wintun.dll`：首次运行时写在 exe 旁边，是 WireGuard 官方签名的虚拟网卡驱动 [Wintun](https://www.wintun.net/) 0.14.1。
+- `%LOCALAPPDATA%\WarpGameBoost\account.json`：WARP 账号和上次的优选结果。删除后下次运行会重新注册。
+- `wintun.dll`：首次运行时写在 exe 旁边，是 WireGuard LLC 签名的 Wintun 0.14.1。
 
 ## 校验
 
@@ -41,16 +82,32 @@ Get-FileHash .\WarpGameBoost.exe -Algorithm SHA256   # 与 SHA256SUMS.txt 对比
 gh attestation verify .\WarpGameBoost.exe -R Freecode100Year/WarpGameBoost
 ```
 
-每次构建都在 Windows 上实测：连接后整机流量确实经过 WARP（`warp=on`），强制结束进程后虚拟网卡被清除、网络恢复（`warp=off`）。
+每次构建都在 Windows 上实测：
+- 开启后整台电脑的流量确实经过 WARP（`warp=on`）；
+- 没有 IPv6 时自动改用 IPv4 入口；
+- 强制结束进程后虚拟网卡被清除、网络恢复（`warp=off`）。
+
+GitHub 的测试机没有 IPv6，IPv6 入口只能靠真实用户反馈，遇到问题请提 Issue。
 
 ## 从源码构建
 
 需要 Go（版本见 `go.mod`），并把 Wintun 0.14.1 的 `bin/amd64/wintun.dll` 放到源码目录：
 
 ```powershell
+go test ./...
 go build -trimpath -ldflags "-s -w" -o WarpGameBoost.exe .
 ```
 
+## 更新记录
+
+- **v0.2.0**：
+  - 修复优选误判：并发探测包的时间戳可能相同，被服务器当作重放丢弃，入口被误记约 20% 丢包，可能选错入口。
+  - 网络变化（换 Wi-Fi、睡眠唤醒）后隧道自动改走新网卡，以前要等到重新优选才恢复。
+  - 防止重复运行。
+  - 正常关闭时不再要求按回车。
+- **v0.1.1**：本机没有 IPv6 时自动改用 IPv4 入口，不再直接退出。
+- **v0.1.0**：首个版本。
+
 ## 许可证
 
-MIT。使用 [wireguard-go](https://git.zx2c4.com/wireguard-go)（MIT）、[wireguard-windows](https://git.zx2c4.com/wireguard-windows) 的 winipcfg（MIT）和 Wintun（预编译签名版，按其许可随程序分发）。WARP 是 Cloudflare 的服务，本项目与 Cloudflare 无关。WARP 入口优选代码来自 [UltraLightBrowser](https://github.com/Freecode100Year/UltraLightBrowser)。
+MIT。使用 [wireguard-go](https://git.zx2c4.com/wireguard-go)（MIT）、[wireguard-windows](https://git.zx2c4.com/wireguard-windows) 的 winipcfg（MIT）和 Wintun（预编译签名版，按其许可随程序分发）。WARP 是 Cloudflare 的服务，本项目与 Cloudflare 无关。入口优选代码来自 [UltraLightBrowser](https://github.com/Freecode100Year/UltraLightBrowser)。
