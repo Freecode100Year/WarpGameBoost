@@ -1,0 +1,74 @@
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Fetch Wintun 0.14.1 (signed by WireGuard LLC)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile wintun.zip
+          $h = (Get-FileHash wintun.zip -Algorithm SHA256).Hash
+          if ($h -ne '07C256185D6EE3652E09FA55C0B673E2624B565E02C4B9091C79CA7D2F24EF51') { throw "wintun hash $h" }
+          Expand-Archive wintun.zip -DestinationPath wt
+          Copy-Item wt\wintun\bin\amd64\wintun.dll .
+      - run: go vet ./...
+      - run: go build -trimpath -ldflags "-s -w -buildid=" -o WarpGameBoost.exe .
+      - name: Self-test (the runner has no IPv6, so IPv4 entries are allowed)
+        shell: pwsh
+        run: |
+          .\WarpGameBoost.exe -selftest -ipv4 -count 80
+          if ($LASTEXITCODE -ne 0) { throw "selftest failed" }
+          Start-Sleep 2
+          if (Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue) { throw "adapter left behind" }
+      - name: Whole-system traffic goes through WARP, and a killed process leaves no adapter
+        shell: pwsh
+        run: |
+          '' | Set-Content empty.txt
+          $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-ipv4','-count','80' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep 3
+            $t = try { (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 5).Content } catch { '' }
+            if ($t -match 'warp=on') { $ok = $true; break }
+          }
+          Get-Content out.txt -Encoding utf8
+          Get-NetRoute -DestinationPrefix 0.0.0.0/1, 128.0.0.0/1 -ErrorAction SilentlyContinue | Format-Table -AutoSize
+          Stop-Process -Id $p.Id -Force
+          Start-Sleep 3
+          if (-not $ok) { throw "system traffic did not go through WARP" }
+          if (Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue) { throw "adapter left behind after kill" }
+          $t = (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 10).Content
+          if ($t -notmatch 'warp=off') { throw "network not restored: $t" }
+          "network restored: warp=off"
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item WarpGameBoost.exe dist\
+          Push-Location dist; (Get-FileHash WarpGameBoost.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  WarpGameBoost.exe" }) | Set-Content SHA256SUMS.txt; Pop-Location
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WarpGameBoost
+          path: dist/*
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/WarpGameBoost.exe
+      - if: startsWith(github.ref, 'refs/tags/')
+        env: { GH_TOKEN: "${{ github.token }}" }
+        shell: pwsh
+        run: gh release create $env:GITHUB_REF_NAME dist/WarpGameBoost.exe dist/SHA256SUMS.txt --title $env:GITHUB_REF_NAME --notes-file RELEASE_NOTES.md
