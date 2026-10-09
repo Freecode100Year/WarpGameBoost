@@ -22,6 +22,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/conn"
@@ -35,11 +36,15 @@ var wintunDLL []byte
 
 const adapterName = "WarpGameBoost"
 
+// version is set at build time: -ldflags "-X main.version=0.3.0".
+var version = "dev"
+
 var (
 	allowV4  = flag.Bool("ipv4", false, "也使用 IPv4 入口（默认只用 IPv6 入口）")
 	count    = flag.Int("count", 200, "每次优选测试的入口数量")
 	selftest = flag.Bool("selftest", false, "连接、验证后立即退出（用于自动测试）")
 	verbose  = flag.Bool("v", false, "显示 WireGuard 调试日志")
+	showVer  = flag.Bool("version", false, "显示版本号后退出")
 )
 
 // physIndex is the interface the tunnel's own UDP packets leave through; probes
@@ -49,6 +54,11 @@ var physIndex4, physIndex6 uint32
 func main() {
 	windows.SetConsoleOutputCP(65001)
 	flag.Parse()
+	if *showVer {
+		fmt.Println("WarpGameBoost " + version)
+		return
+	}
+	setConsoleTitle("WarpGameBoost " + version)
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		elevate()
 		return
@@ -88,7 +98,7 @@ func elevate() {
 }
 
 func run() int {
-	fmt.Println("WarpGameBoost — Cloudflare WARP 游戏加速（IPv6 入口 IP 优选）")
+	fmt.Printf("WarpGameBoost %s — Cloudflare WARP 游戏加速（IPv6 入口 IP 优选）\n", version)
 	fmt.Println()
 	dir := filepath.Join(os.Getenv("LOCALAPPDATA"), "WarpGameBoost")
 	acctPath := filepath.Join(dir, "account.json")
@@ -502,4 +512,12 @@ func dialOutside(endpoint string) (net.Conn, error) {
 		return serr
 	}}
 	return d.Dial("udp", endpoint)
+}
+
+func setConsoleTitle(title string) {
+	p, err := windows.UTF16PtrFromString(title)
+	if err != nil {
+		return
+	}
+	windows.NewLazySystemDLL("kernel32.dll").NewProc("SetConsoleTitleW").Call(uintptr(unsafe.Pointer(p)))
 }

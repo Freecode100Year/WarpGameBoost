@@ -14,6 +14,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -27,7 +29,34 @@ jobs:
           Copy-Item wt\wintun\bin\amd64\wintun.dll .
       - run: go vet ./...
       - run: go test ./...
-      - run: go build -trimpath -ldflags "-s -w -buildid=" -o WarpGameBoost.exe .
+      - name: Version
+        shell: pwsh
+        run: |
+          # Tag builds are the tag (v0.3.0 -> 0.3.0); other builds are the last
+          # tag plus commits since, e.g. 0.3.0-2-gabc1234.
+          $desc = (git describe --tags --always) -replace '^v', ''
+          $num = if ($desc -match '^(\d+\.\d+\.\d+)') { $Matches[1] } else { '0.0.0' }
+          "VERSION=$desc" >> $env:GITHUB_ENV
+          "VERSION_NUM=$num" >> $env:GITHUB_ENV
+          "version $desc (file version $num)"
+      - name: Windows version resource (file properties) and UAC manifest
+        shell: pwsh
+        run: |
+          go install github.com/tc-hib/go-winres@v0.3.3
+          go-winres simply --arch amd64 --manifest cli --admin --product-name WarpGameBoost `
+            --file-description "WarpGameBoost - Cloudflare WARP game acceleration" `
+            --product-version $env:VERSION_NUM --file-version $env:VERSION_NUM `
+            --original-filename WarpGameBoost.exe --copyright "MIT License, Freecode100Year"
+      - run: go build -trimpath -ldflags "-s -w -buildid= -X main.version=${{ env.VERSION }}" -o WarpGameBoost.exe .
+      - name: Version is embedded
+        shell: pwsh
+        run: |
+          $out = .\WarpGameBoost.exe -version
+          $out
+          if ($out -ne "WarpGameBoost $env:VERSION") { throw "version flag says $out" }
+          $fv = (Get-Item .\WarpGameBoost.exe).VersionInfo
+          "file version $($fv.FileVersion), product $($fv.ProductName) $($fv.ProductVersion)"
+          if (-not $fv.FileVersion.StartsWith($env:VERSION_NUM)) { throw "file version $($fv.FileVersion)" }
       - name: Self-test (the runner has no IPv6, so IPv4 entries are allowed)
         shell: pwsh
         run: |

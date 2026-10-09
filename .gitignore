@@ -3,3 +3,4 @@ wintun.zip
 wt/
 *.exe
 dist/
+*.syso
