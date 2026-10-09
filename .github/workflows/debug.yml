@@ -18,14 +18,19 @@ jobs:
           go build -o WarpGameBoost.exe .
       - shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoSize
           Find-NetRoute -RemoteIPAddress 168.63.129.16 | Select-Object -Last 1 | Format-List DestinationPrefix,InterfaceAlias,NextHop
           '' | Set-Content empty.txt
-          $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-count','80','-v' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
-          Start-Sleep 50
-          Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch '^wg: ' } | Select-Object -First 40
+          $p = Start-Process .\WarpGameBoost.exe -ArgumentList '-count','80' -RedirectStandardInput empty.txt -RedirectStandardOutput out.txt -PassThru
+          Start-Sleep 45
+          "alive: $(-not $p.HasExited)"
+          Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' } | Select-Object -First 40
           Find-NetRoute -RemoteIPAddress 168.63.129.16 | Select-Object -Last 1 | Format-List DestinationPrefix,InterfaceAlias
-          Get-NetIPAddress -InterfaceAlias WarpGameBoost | Format-Table IPAddress,PrefixOrigin -AutoSize
+          Get-NetIPAddress -InterfaceAlias WarpGameBoost | Format-Table IPAddress,AddressState -AutoSize
+          Get-NetRoute -InterfaceAlias WarpGameBoost | Format-Table DestinationPrefix,NextHop,RouteMetric -AutoSize
+          Get-NetIPInterface -InterfaceAlias WarpGameBoost | Format-Table AddressFamily,InterfaceMetric,NlMtu,ConnectionState -AutoSize
+          "--- ping6"; ping -6 -n 2 2606:4700:4700::1111
           Clear-DnsClientCache
           "--- A";    Resolve-DnsName www.cloudflare.com -Type A -ErrorAction Continue | Format-Table -AutoSize
           "--- AAAA"; Resolve-DnsName www.cloudflare.com -Type AAAA -ErrorAction Continue | Format-Table -AutoSize
