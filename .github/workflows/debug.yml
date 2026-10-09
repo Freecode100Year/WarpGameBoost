@@ -25,12 +25,10 @@ jobs:
           "ready after $i s"
           function T($name, $sb) { $sw = [Diagnostics.Stopwatch]::StartNew(); $r = & $sb 2>&1 | Out-String; "--- $name ($([int]$sw.ElapsedMilliseconds) ms): $($r.Trim() -replace '\s+',' ')" }
           T 'resolve' { (Resolve-DnsName www.cloudflare.com | Select-Object -ExpandProperty IPAddress) -join ' ' }
-          T 'curl auto' { curl.exe -s -m 10 -w '%{errormsg}' https://www.cloudflare.com/cdn-cgi/trace | Select-String 'ip=|warp=|Fail' }
-          T 'curl ipv4-only' { curl.exe -s -m 10 -w '%{errormsg}' https://api.ipify.org }
-          T 'iwr' { try { (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 15).Content | Select-String 'ip=|warp=' } catch { $_.Exception.Message } }
-          T 'iwr github' { try { (Invoke-WebRequest https://github.com -UseBasicParsing -TimeoutSec 15).StatusCode } catch { $_.Exception.Message } }
-          T 'edge trace' { & 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' --headless=new --disable-gpu --dump-dom https://www.cloudflare.com/cdn-cgi/trace 2>$null | Select-String 'ip=|warp=' }
-          T 'edge google' { (& 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' --headless=new --disable-gpu --dump-dom https://www.google.com 2>$null | Out-String).Length }
-          T 'edge v4-only' { (& 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' --headless=new --disable-gpu --dump-dom https://api.ipify.org 2>$null | Out-String) -replace '<style.*?</style>','' -replace '<[^>]+>',' ' | Select-String -Pattern '\S' | ForEach-Object { $_.Line.Substring(0, [Math]::Min(200, $_.Line.Length)) } }
+          T 'getaddrinfo' { [Net.Dns]::GetHostAddresses('www.cloudflare.com') -join ' ' }
+          T 'curl auto -v' { curl.exe -v -s -m 10 -o NUL https://www.cloudflare.com/cdn-cgi/trace 2>&1 | Select-String 'IPv|Trying|connect|Failed|schannel' }
+          T 'prefix policy' { netsh interface ipv6 show prefixpolicies | Out-String }
+          T 'ipv6 addrs' { Get-NetIPAddress -AddressFamily IPv6 | ForEach-Object { "$($_.InterfaceAlias)=$($_.IPAddress)/$($_.PrefixOrigin)" } }
+          T 'v6 routes' { Get-NetRoute -AddressFamily IPv6 | Where-Object DestinationPrefix -in '::/0','::/1','8000::/1' | ForEach-Object { "$($_.InterfaceAlias) $($_.DestinationPrefix) $($_.RouteMetric)" } }
           Stop-Process -Id $p.Id -Force
           Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' } | Select-Object -Last 25
