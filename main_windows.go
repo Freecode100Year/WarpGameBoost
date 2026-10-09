@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -45,6 +46,7 @@ var (
 	selftest = flag.Bool("selftest", false, "连接、验证后立即退出（用于自动测试）")
 	verbose  = flag.Bool("v", false, "显示 WireGuard 调试日志")
 	showVer  = flag.Bool("version", false, "显示版本号后退出")
+	v6only   = flag.Bool("v6only", true, "出口只走 IPv6，禁用 IPv4；只有 IPv4 的游戏（如守望先锋）要加 -v6only=false")
 )
 
 // physIndex is the interface the tunnel's own UDP packets leave through; probes
@@ -155,12 +157,31 @@ func run() int {
 		fmt.Println("\n加速已关闭，网络已恢复。")
 	}()
 
+	if *verbose {
+		fmt.Println(time.Now().Format("15:04:05.000"), "开始验证")
+	}
 	trace := warpTrace()
 	if !strings.Contains(trace, "warp=on") {
 		fmt.Println("隧道已建立，但验证失败：", strings.TrimSpace(trace))
 		return 1
 	}
-	fmt.Printf("\n✅ 加速已开启（仅流量模式）：本机全部网络（包括游戏）经 WARP 入口 %s，DNS 保持系统设置\n", t.endpoint())
+	if *v6only {
+		if _, ok := tcpPing("1.1.1.1:443"); ok {
+			fmt.Println("IPv4 仍然可以访问，禁用失败。")
+			return 1
+		}
+		if !strings.Contains(traceField(trace, "ip"), ":") {
+			fmt.Println("出口不是 IPv6：", strings.TrimSpace(trace))
+			return 1
+		}
+	}
+	fmt.Printf("\n✅ 加速已开启：本机全部网络（包括游戏）经 WARP 入口 %s\n", t.endpoint())
+	if *v6only {
+		fmt.Printf("   出口仅 IPv6（%s），IPv4 已禁用，DNS 经隧道用 Cloudflare。\n", traceField(trace, "ip"))
+		fmt.Println("   只有 IPv4 的网站和游戏会连不上；玩守望先锋请加参数 -v6only=false。")
+	} else {
+		fmt.Println("   仅流量模式：DNS 保持系统设置。")
+	}
 	fmt.Println("   现在可以打开游戏。关闭本窗口或按 Ctrl+C 结束加速；输入 r 回车重新优选。")
 	fmt.Println()
 	if *selftest {
@@ -192,6 +213,16 @@ type tunnel struct {
 	key  string
 	mu   sync.Mutex
 	ep   string
+
+	reject *v4Reject // set with -v6only
+}
+
+// refreshDNS keeps the IPv4 DNS servers let through -v6only in step with the
+// network Windows is on.
+func (t *tunnel) refreshDNS() {
+	if t.reject != nil {
+		t.reject.setAllowed(systemDNS4(t.luid))
+	}
 }
 
 func (t *tunnel) endpoint() string { t.mu.Lock(); defer t.mu.Unlock(); return t.ep }
@@ -216,7 +247,16 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 	if *verbose {
 		level = device.LogLevelVerbose
 	}
-	t.dev = device.NewDevice(tdev, t.bind, device.NewLogger(level, "wg: "))
+	var dev tun.Device = tdev
+	if *v6only {
+		t.reject = &v4Reject{Device: tdev}
+		t.reject.setAllowed(systemDNS4(t.luid))
+		if *verbose {
+			fmt.Println("经隧道放行的 IPv4 DNS：", systemDNS4(t.luid))
+		}
+		dev = t.reject
+	}
+	t.dev = device.NewDevice(dev, t.bind, device.NewLogger(level, "wg: "))
 	priv, _ := base64.StdEncoding.DecodeString(acct.PrivateKey)
 	peer, _ := base64.StdEncoding.DecodeString(acct.PeerKey)
 	t.key = hex.EncodeToString(peer)
@@ -285,6 +325,15 @@ func (t *tunnel) configure(acct *Account) error {
 			iface.Set()
 		}
 	}
+	// Windows only returns IPv6 addresses for a name when the interface the
+	// query went out on has IPv6. On an IPv4-only network that is never the
+	// real adapter, so with -v6only the tunnel gets Cloudflare's resolver at
+	// its IPv6 addresses, asked through the tunnel.
+	if *v6only {
+		if err := t.luid.SetDNS(windows.AF_INET6, v6DNS, nil); err != nil {
+			return fmt.Errorf("设置 DNS：%w", err)
+		}
+	}
 	// Traffic only: the adapter gets no DNS servers, so Windows keeps resolving
 	// with the system's own DNS settings. Queries to a resolver on the local
 	// network stay local (its on-link route is more specific than the halves
@@ -294,6 +343,10 @@ func (t *tunnel) configure(acct *Account) error {
 		{Destination: netip.MustParsePrefix("128.0.0.0/1"), NextHop: netip.IPv4Unspecified()},
 		{Destination: netip.MustParsePrefix("::/1"), NextHop: netip.IPv6Unspecified()},
 		{Destination: netip.MustParsePrefix("8000::/1"), NextHop: netip.IPv6Unspecified()},
+		// Windows only hands out IPv6 addresses for names when some interface
+		// has an IPv6 default route; on an IPv4-only network that has to be
+		// this one, or nothing would try the tunnel's IPv6.
+		{Destination: netip.MustParsePrefix("::/0"), NextHop: netip.IPv6Unspecified()},
 	}
 	if err := t.luid.SetRoutes(routes); err != nil {
 		return fmt.Errorf("设置路由：%w", err)
@@ -406,8 +459,9 @@ func (t *tunnel) loop(acct *Account, acctPath string) {
 		case <-tick.C:
 			if t.followNetwork() {
 				fmt.Printf("\n网络已变化，隧道改走新的网卡。\n")
+				t.refreshDNS()
 			}
-			rtt, ok := tcpPing("1.1.1.1:443")
+			rtt, ok := tcpPing(pingTarget())
 			age := t.handshakeAge()
 			if ok {
 				fails = 0
@@ -428,6 +482,7 @@ func (t *tunnel) loop(acct *Account, acctPath string) {
 func (t *tunnel) reoptimize(acct *Account, acctPath string) {
 	fmt.Println()
 	t.followNetwork()
+	t.refreshDNS()
 	results := optimize(acct, t.endpoint())
 	if len(results) == 0 {
 		fmt.Println("没有找到可用入口，保持当前入口。")
@@ -443,6 +498,53 @@ func (t *tunnel) reoptimize(acct *Account, acctPath string) {
 	saveAccount(acctPath, acct)
 }
 
+var v6DNS = []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}
+
+func pingTarget() string {
+	if *v6only {
+		return "[2606:4700:4700::1111]:443"
+	}
+	return "1.1.1.1:443"
+}
+
+// systemDNS4 lists the IPv4 DNS servers Windows is using. With -v6only they
+// stay reachable through the tunnel, or names would stop resolving on networks
+// that hand out a public resolver.
+func systemDNS4(skip winipcfg.LUID) []netip.Addr {
+	adapters, err := winipcfg.GetAdaptersAddresses(windows.AF_INET, winipcfg.GAAFlagDefault)
+	if err != nil {
+		return nil
+	}
+	seen := map[netip.Addr]bool{}
+	var out []netip.Addr
+	for _, ad := range adapters {
+		if ad.OperStatus != winipcfg.IfOperStatusUp || ad.LUID == skip {
+			continue
+		}
+		for d := ad.FirstDNSServerAddress; d != nil; d = d.Next {
+			a, ok := netip.AddrFromSlice(d.Address.IP())
+			if !ok {
+				continue
+			}
+			a = a.Unmap()
+			if a.Is4() && !a.IsLoopback() && !a.IsUnspecified() && !seen[a] {
+				seen[a] = true
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+func traceField(trace, key string) string {
+	for _, line := range strings.Split(trace, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 func tcpPing(addr string) (time.Duration, bool) {
 	start := time.Now()
 	c, err := net.DialTimeout("tcp", addr, 3*time.Second)
@@ -455,12 +557,25 @@ func tcpPing(addr string) (time.Duration, bool) {
 
 func warpTrace() string {
 	client := &http.Client{Timeout: 10 * time.Second}
+	if *v6only {
+		// Go's resolver may hand back only IPv4 addresses here; ask for IPv6.
+		d := &net.Dialer{}
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				return d.DialContext(ctx, "tcp6", addr)
+			},
+			ForceAttemptHTTP2: true,
+		}
+	}
 	for i := 0; i < 3; i++ {
 		resp, err := client.Get("https://www.cloudflare.com/cdn-cgi/trace")
 		if err == nil {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			return string(b)
+		}
+		if *verbose {
+			fmt.Println(time.Now().Format("15:04:05.000"), "验证请求失败：", err)
 		}
 		time.Sleep(2 * time.Second)
 	}

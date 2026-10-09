@@ -57,19 +57,19 @@ jobs:
           $fv = (Get-Item .\WarpGameBoost.exe).VersionInfo
           "file version $($fv.FileVersion), product $($fv.ProductName) $($fv.ProductVersion)"
           if (-not $fv.FileVersion.StartsWith($env:VERSION_NUM)) { throw "file version $($fv.FileVersion)" }
-      - name: Self-test (the runner has no IPv6, so IPv4 entries are allowed)
+      - name: Self-test with IPv4 exit (the runner has no IPv6, so IPv4 entries are allowed)
         shell: pwsh
         run: |
-          .\WarpGameBoost.exe -selftest -ipv4 -count 80
+          .\WarpGameBoost.exe -selftest -ipv4 -v6only=false -count 80
           if ($LASTEXITCODE -ne 0) { throw "selftest failed" }
           Start-Sleep 2
           if (Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue) { throw "adapter left behind" }
-      - name: Self-test without -ipv4 on a machine with no IPv6 (falls back to IPv4 entries)
+      - name: Self-test with defaults (IPv6-only exit; no IPv6 here, so IPv4 entries)
         shell: pwsh
         run: |
           .\WarpGameBoost.exe -selftest -count 80
           if ($LASTEXITCODE -ne 0) { throw "selftest without IPv6 failed" }
-      - name: Whole-system traffic goes through WARP, and a killed process leaves no adapter
+      - name: Whole-system traffic leaves over IPv6 only, and a killed process leaves no adapter
         shell: pwsh
         run: |
           '' | Set-Content empty.txt
@@ -80,14 +80,25 @@ jobs:
             $t = try { (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 5).Content } catch { '' }
             if ($t -match 'warp=on') { $ok = $true; break }
           }
+          "trace ip: $(($t -split "`n" | Where-Object { $_ -like 'ip=*' }))"
+          if ($t -notmatch 'ip=[0-9a-f]*:') { Stop-Process -Id $p.Id -Force; throw "exit is not IPv6" }
+          $c = New-Object Net.Sockets.TcpClient
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $v4 = try { $c.ConnectAsync('1.1.1.1', 443).Wait(8000) -and $c.Connected } catch { $false }
+          $c.Dispose()
+          "IPv4 1.1.1.1:443 reachable: $v4 (answered in $($sw.ElapsedMilliseconds) ms)"
+          if ($v4) { Stop-Process -Id $p.Id -Force; throw "IPv4 not blocked" }
+          if ($sw.ElapsedMilliseconds -gt 6000) { Stop-Process -Id $p.Id -Force; throw "IPv4 is dropped, not refused" }
+          $addrs = [Net.Dns]::GetHostAddresses('www.cloudflare.com') -join ' '
+          "getaddrinfo: $addrs"
+          if ($addrs -notmatch ':') { Stop-Process -Id $p.Id -Force; throw "Windows does not hand out IPv6 addresses" }
           Get-Content out.txt -Encoding utf8
           Get-NetRoute -DestinationPrefix 0.0.0.0/1, 128.0.0.0/1 -ErrorAction SilentlyContinue | Format-Table -AutoSize
-          # Traffic only: the adapter must not carry DNS servers of its own.
-          # (fec0:0:0:ffff::1-3 are the placeholders Windows shows on every IPv6
-          # interface without DNS servers; they are not ours.)
+          # With -v6only the adapter carries Cloudflare's IPv6 resolver and
+          # nothing else (fec0:0:0:ffff::1-3 are Windows' placeholders).
           $dns = (Get-DnsClientServerAddress -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).ServerAddresses | Where-Object { $_ -notlike 'fec0:0:0:ffff::*' }
           "adapter DNS servers: [$($dns -join ', ')]"
-          if ($dns) { Stop-Process -Id $p.Id -Force; throw "adapter has DNS servers: $dns" }
+          if (($dns -join ',') -ne '2606:4700:4700::1111,2606:4700:4700::1001') { Stop-Process -Id $p.Id -Force; throw "unexpected adapter DNS: $dns" }
           Clear-DnsClientCache
           $sw = [Diagnostics.Stopwatch]::StartNew()
           $resolved = Resolve-DnsName www.blizzard.com -ErrorAction SilentlyContinue | Select-Object -First 1
