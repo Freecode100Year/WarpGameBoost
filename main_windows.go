@@ -4,8 +4,8 @@ package main
 
 import (
 	"bufio"
-	_ "embed"
 	"bytes"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"flag"
