@@ -130,8 +130,15 @@ func run() int {
 	}
 	t, err := start(acct, results)
 	if err != nil {
-		fmt.Println("连接失败：", err)
-		return 1
+		fmt.Println("连接失败：", err, "——稍等后重新优选再试一次。")
+		time.Sleep(5 * time.Second)
+		if results = optimize(acct, ""); len(results) > 0 {
+			t, err = start(acct, results)
+		}
+		if err != nil || t == nil {
+			fmt.Println("连接失败：", err)
+			return 1
+		}
 	}
 	defer func() {
 		t.dev.Close()
@@ -217,16 +224,21 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 	// The tunnel's own packets must leave through the real network, not loop
 	// back into the routes added below.
 	t.rebind()
-	// Try the best few endpoints until one completes a handshake.
+	// Try the best endpoints until one completes a handshake. An endpoint that
+	// answered every probe a moment ago occasionally does not answer the
+	// tunnel; moving on beats waiting for its retransmissions.
 	ok := false
 	for i, r := range results {
-		if i == 5 {
+		if i == 10 {
 			break
 		}
-		if i > 0 && !t.roam(r.Endpoint) {
-			continue
+		if i > 0 {
+			fmt.Printf("入口 %s 没有回应，改试下一个…\n", results[i-1].Endpoint)
+			if !t.roam(r.Endpoint) {
+				continue
+			}
 		}
-		if t.waitHandshake(8 * time.Second) {
+		if t.waitHandshake(6 * time.Second) {
 			ok = true
 			break
 		}
