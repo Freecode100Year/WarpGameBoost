@@ -474,6 +474,9 @@ func allowedIPs() string {
 	}
 	var b strings.Builder
 	b.WriteString("allowed_ip=::/0\n")
+	if *verbose {
+		fmt.Println("经隧道放行的 IPv4 DNS：", systemDNS4())
+	}
 	for _, a := range systemDNS4() {
 		fmt.Fprintf(&b, "allowed_ip=%s/32\n", a)
 	}
