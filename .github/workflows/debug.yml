@@ -24,12 +24,11 @@ jobs:
           foreach ($i in 1..90) { Start-Sleep 1; if ((Get-Content out.txt -Raw -Encoding utf8 -ErrorAction SilentlyContinue) -match '加速已开启|验证失败|连接失败') { break } }
           "ready after $i s"
           function T($name, $sb) { $sw = [Diagnostics.Stopwatch]::StartNew(); $r = & $sb 2>&1 | Out-String; "--- $name ($([int]$sw.ElapsedMilliseconds) ms): $($r.Trim() -replace '\s+',' ')" }
-          T 'curl https auto' { curl.exe -s -m 10 https://www.cloudflare.com/cdn-cgi/trace | Select-String 'ip=|warp=' }
-          T 'curl -4' { curl.exe -4 -s -m 10 -w '%{errormsg}' https://www.cloudflare.com/cdn-cgi/trace }
-          T 'curl ipv4-only site' { curl.exe -s -m 10 -w '%{errormsg}' https://api.ipify.org }
-          T 'iwr' { (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 15).Content | Select-String 'ip=|warp=' }
-          T 'iwr github' { (Invoke-WebRequest https://github.com -UseBasicParsing -TimeoutSec 15).StatusCode }
-          T 'curl -6' { curl.exe -6 -s -m 10 https://www.cloudflare.com/cdn-cgi/trace | Select-String 'ip=|warp=' }
-          T 'dns' { (Resolve-DnsName www.blizzard.com -ErrorAction Continue | Select-Object -First 1).Name }
+          T 'curl -6 -v' { curl.exe -6 -v -s -m 10 -o NUL https://www.cloudflare.com/cdn-cgi/trace 2>&1 | Select-String 'schannel|Failed|HTTP/' }
+          T 'curl --ssl-no-revoke' { curl.exe --ssl-no-revoke -s -m 10 https://www.cloudflare.com/cdn-cgi/trace | Select-String 'ip=|warp=' }
+          T 'iwr' { try { (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 15).Content | Select-String 'ip=|warp=' } catch { $_.Exception.ToString().Substring(0, 400) } }
+          T 'edge' { & 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' --headless=new --disable-gpu --dump-dom https://www.cloudflare.com/cdn-cgi/trace | Select-String 'ip=|warp=' }
+          T 'edge v4-only site' { & 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' --headless=new --disable-gpu --dump-dom https://api.ipify.org | Select-String 'body' }
+          T 'edge github' { (& 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' --headless=new --disable-gpu --dump-dom https://www.google.com | Out-String).Length }
           Stop-Process -Id $p.Id -Force
           Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' } | Select-Object -Last 25
