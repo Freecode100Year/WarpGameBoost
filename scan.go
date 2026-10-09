@@ -176,7 +176,7 @@ func handshakeInitiation(staticPriv, peerPub []byte) []byte {
 	h = hashAll(h[:], encStatic)
 	dh2, _ := curve25519.X25519(staticPriv, peerPub)
 	_, k = kdf2(ck, dh2)
-	encTime := seal(k, tai64n(time.Now()), h[:])
+	encTime := seal(k, tai64n(probeStamp()), h[:])
 	copy(msg[88:116], encTime)
 
 	macKey := hashAll([]byte("mac1----"), peerPub)
@@ -222,12 +222,41 @@ func seal(key, plain, ad []byte) []byte {
 	return aead.Seal(nil, nonce, plain, ad)
 }
 
+// probeStamp returns the current time once its handshake timestamp is strictly
+// newer than every probe sent before it. All probes carry the same static key,
+// and a WARP server drops an initiation whose timestamp is not newer than the
+// last one it saw from that key. Endpoints are anycast, so concurrent probes to
+// different addresses often reach the same server; when two shared a ~16 ms
+// timestamp slot one was dropped, and the endpoint was charged a lost reply it
+// never lost (about one in five in practice). Waiting for the next slot caps
+// probing at ~60 handshakes a second, and using real time rather than a
+// counter keeps the tunnel's own next handshake newer than all of them.
+func probeStamp() time.Time {
+	stampMu.Lock()
+	defer stampMu.Unlock()
+	for {
+		t := time.Now()
+		slot := t.Unix()<<32 | int64(uint32(t.Nanosecond())&^whitenerMask)
+		if slot > lastSlot {
+			lastSlot = slot
+			return t
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+var (
+	stampMu  sync.Mutex
+	lastSlot int64
+)
+
+const whitenerMask = uint32(0x1000000 - 1)
+
 // tai64n encodes the handshake timestamp the way wireguard-go does: nanoseconds
 // rounded down to about 16 ms. The server only accepts an initiation whose timestamp
 // is newer than the last one it saw from this key, so the probes must never carry a
 // finer (and therefore possibly newer) timestamp than the tunnel's own next handshake.
 func tai64n(t time.Time) []byte {
-	const whitenerMask = uint32(0x1000000 - 1)
 	out := make([]byte, 12)
 	binary.BigEndian.PutUint64(out[:8], uint64(0x400000000000000a)+uint64(t.Unix()))
 	binary.BigEndian.PutUint32(out[8:], uint32(t.Nanosecond())&^whitenerMask)

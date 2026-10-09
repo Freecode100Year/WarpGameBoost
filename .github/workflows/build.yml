@@ -26,6 +26,7 @@ jobs:
           Expand-Archive wintun.zip -DestinationPath wt
           Copy-Item wt\wintun\bin\amd64\wintun.dll .
       - run: go vet ./...
+      - run: go test ./...
       - run: go build -trimpath -ldflags "-s -w -buildid=" -o WarpGameBoost.exe .
       - name: Self-test (the runner has no IPv6, so IPv4 entries are allowed)
         shell: pwsh

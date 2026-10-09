@@ -52,12 +52,24 @@ func main() {
 		elevate()
 		return
 	}
+	// A second copy would reuse the same adapter (Wintun reuses an adapter by
+	// name) and the two would fight over its routes.
+	name, _ := windows.UTF16PtrFromString("Local\\WarpGameBoost")
+	if h, err := windows.CreateMutex(nil, false, name); err == windows.ERROR_ALREADY_EXISTS {
+		fmt.Println("WarpGameBoost 已经在运行。")
+		time.Sleep(3 * time.Second)
+		return
+	} else if h != 0 {
+		defer windows.CloseHandle(h)
+	}
 	code := run()
-	if !*selftest {
+	if code != 0 && !*selftest {
 		fmt.Println("\n按回车键退出…")
 		bufio.NewReader(os.Stdin).ReadString('\n')
 	}
-	os.Exit(code)
+	if code != 0 {
+		os.Exit(code)
+	}
 }
 
 // elevate restarts this program as administrator: a virtual network adapter and
@@ -199,14 +211,7 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 	}
 	// The tunnel's own packets must leave through the real network, not loop
 	// back into the routes added below.
-	if b, ok := t.bind.(conn.BindSocketToInterface); ok {
-		if physIndex6 != 0 {
-			b.BindSocketToInterface6(physIndex6, false)
-		}
-		if physIndex4 != 0 {
-			b.BindSocketToInterface4(physIndex4, false)
-		}
-	}
+	t.rebind()
 	// Try the best few endpoints until one completes a handshake.
 	ok := false
 	for i, r := range results {
@@ -265,6 +270,36 @@ func (t *tunnel) configure(acct *Account) error {
 		return fmt.Errorf("设置路由：%w", err)
 	}
 	return nil
+}
+
+// rebind pins the tunnel's UDP sockets to the current physical interfaces.
+func (t *tunnel) rebind() {
+	if b, ok := t.bind.(conn.BindSocketToInterface); ok {
+		if physIndex6 != 0 {
+			b.BindSocketToInterface6(physIndex6, false)
+		}
+		if physIndex4 != 0 {
+			b.BindSocketToInterface4(physIndex4, false)
+		}
+	}
+}
+
+// followNetwork notices when the default route moves to another interface
+// (Wi-Fi reconnects, a cable is plugged in, the PC wakes up) and moves the
+// tunnel's sockets with it. Without this they stayed bound to the old
+// interface and the tunnel was dead until a rescan.
+func (t *tunnel) followNetwork() bool {
+	i6 := defaultInterface(windows.AF_INET6, t.luid)
+	i4 := physIndex4
+	if *allowV4 {
+		i4 = defaultInterface(windows.AF_INET, t.luid)
+	}
+	if i6 == physIndex6 && i4 == physIndex4 {
+		return false
+	}
+	physIndex6, physIndex4 = i6, i4
+	t.rebind()
+	return true
 }
 
 func (t *tunnel) handshakeAge() time.Duration {
@@ -340,6 +375,9 @@ func (t *tunnel) loop(acct *Account, acctPath string) {
 				t.reoptimize(acct, acctPath)
 			}
 		case <-tick.C:
+			if t.followNetwork() {
+				fmt.Printf("\n网络已变化，隧道改走新的网卡。\n")
+			}
 			rtt, ok := tcpPing("1.1.1.1:443")
 			age := t.handshakeAge()
 			if ok {
@@ -360,10 +398,7 @@ func (t *tunnel) loop(acct *Account, acctPath string) {
 
 func (t *tunnel) reoptimize(acct *Account, acctPath string) {
 	fmt.Println()
-	physIndex6 = defaultInterface(windows.AF_INET6, t.luid)
-	if *allowV4 {
-		physIndex4 = defaultInterface(windows.AF_INET, t.luid)
-	}
+	t.followNetwork()
 	results := optimize(acct, t.endpoint())
 	if len(results) == 0 {
 		fmt.Println("没有找到可用入口，保持当前入口。")
