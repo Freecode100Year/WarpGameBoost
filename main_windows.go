@@ -46,6 +46,7 @@ var (
 	selftest = flag.Bool("selftest", false, "连接、验证后立即退出（用于自动测试）")
 	verbose  = flag.Bool("v", false, "显示 WireGuard 调试日志")
 	showVer  = flag.Bool("version", false, "显示版本号后退出")
+	diag     = flag.Bool("diag", true, "启动时先诊断网络（路由器/运营商/暴雪三段）")
 	v6only   = flag.Bool("v6only", true, "出口只走 IPv6，禁用 IPv4；只有 IPv4 的游戏（如守望先锋）要加 -v6only=false")
 )
 
@@ -126,6 +127,11 @@ func run() int {
 		physIndex4 = defaultInterface(winipcfg.AddressFamily(windows.AF_INET), 0)
 	}
 
+	var blizzard *series
+	if *diag {
+		blizzard = diagnose()
+	}
+
 	results := optimize(acct, "")
 	if len(results) == 0 {
 		fmt.Println("没有找到可用的 WARP 入口：所在网络可能封锁了 WARP。")
@@ -181,6 +187,8 @@ func run() int {
 		fmt.Println("   只有 IPv4 的网站和游戏会连不上；玩守望先锋请加参数 -v6only=false。")
 	} else {
 		fmt.Println("   仅流量模式：DNS 保持系统设置。")
+		fmt.Println()
+		compareWarp(blizzard)
 	}
 	fmt.Println("   现在可以打开游戏。关闭本窗口或按 Ctrl+C 结束加速；输入 r 回车重新优选。")
 	fmt.Println()
