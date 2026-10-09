@@ -331,6 +331,10 @@ func (t *tunnel) configure(acct *Account) error {
 		{Destination: netip.MustParsePrefix("128.0.0.0/1"), NextHop: netip.IPv4Unspecified()},
 		{Destination: netip.MustParsePrefix("::/1"), NextHop: netip.IPv6Unspecified()},
 		{Destination: netip.MustParsePrefix("8000::/1"), NextHop: netip.IPv6Unspecified()},
+		// Windows only hands out IPv6 addresses for names when some interface
+		// has an IPv6 default route; on an IPv4-only network that has to be
+		// this one, or nothing would try the tunnel's IPv6.
+		{Destination: netip.MustParsePrefix("::/0"), NextHop: netip.IPv6Unspecified()},
 	}
 	if err := t.luid.SetRoutes(routes); err != nil {
 		return fmt.Errorf("设置路由：%w", err)
