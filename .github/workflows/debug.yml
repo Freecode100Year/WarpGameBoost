@@ -28,18 +28,19 @@ jobs:
           foreach ($i in 1..90) { Start-Sleep 1; if (Get-NetRoute -DestinationPrefix 8000::/1 -ErrorAction SilentlyContinue) { break } }
           Start-Sleep 3
           "ready after $i s"; $sw = [Diagnostics.Stopwatch]::StartNew()
-          pktmon filter add -p 443
-          pktmon start --capture --comp nics --pkt-size 0 -f cap.etl | Out-Null
+          pktmon filter add -i 2606:4700:4700::1111; pktmon filter add -i 2606:4700::6810:7b60; pktmon filter add -i 2606:4700::6810:7c60
+          pktmon start --capture --comp all --pkt-size 0 -f cap.etl | Out-Null
           "--- tnc v6"; $c = New-Object Net.Sockets.TcpClient([Net.Sockets.AddressFamily]::InterNetworkV6); try { $c.ConnectAsync('2606:4700:4700::1111', 443).Wait(5000); "connected: $($c.Connected)" } catch { $_.Exception.InnerException.Message }
           "routes: $((Get-NetRoute -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).DestinationPrefix -join ',') status: $((Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue).Status) t=$([int]$sw.Elapsed.TotalSeconds)"
           "--- ping6"; ping -6 -n 2 2606:4700:4700::1111
           "routes: $((Get-NetRoute -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).DestinationPrefix -join ',') status: $((Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue).Status) t=$([int]$sw.Elapsed.TotalSeconds)"
+          "--- http -6"; curl.exe -6 -s -m 6 -o NUL -w "%{http_code} %{size_download}`n" http://www.cloudflare.com/cdn-cgi/trace
           "--- curl -6 -v"; curl.exe -6 -v -s -m 8 https://www.cloudflare.com/cdn-cgi/trace 2>&1 | Select-Object -Last 15
           "routes: $((Get-NetRoute -InterfaceAlias WarpGameBoost -ErrorAction SilentlyContinue).DestinationPrefix -join ',') status: $((Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue).Status) t=$([int]$sw.Elapsed.TotalSeconds)"
           "--- curl http v6 literal"; curl.exe -v -s -m 8 "http://[2606:4700:4700::1111]/cdn-cgi/trace" 2>&1 | Select-Object -Last 15
           "--- curl -4"; curl.exe -4 -s -m 8 https://www.cloudflare.com/cdn-cgi/trace 2>&1 | Select-String 'ip=|warp='
           pktmon stop | Out-Null
           pktmon etl2txt cap.etl -o cap.txt | Out-Null
-          Get-Content cap.txt | Select-String '2606' | Select-Object -First 40
+          Get-Content cap.txt | Select-String 'length' | ForEach-Object { $_.Line -replace '^.*ethertype','' } | Select-Object -First 80
           $p.WaitForExit(90000) | Out-Null
           Get-Content out.txt -Encoding utf8 | Where-Object { $_ -notmatch 'DEBUG: ' -or $_ -match 'Sending|Received|Retrying' } | Select-Object -Last 60
