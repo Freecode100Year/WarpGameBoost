@@ -1,10 +1,9 @@
 package main
 
 import (
-	"crypto/tls"
 	"fmt"
-	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 	"unsafe"
@@ -19,11 +18,6 @@ var (
 	icmpCloseHandle = iphlpapi.NewProc("IcmpCloseHandle")
 	icmpSendEcho    = iphlpapi.NewProc("IcmpSendEcho")
 )
-
-// blizzardHost is Blizzard's Overwatch website, served from AWS in Virginia.
-// It is not a match server (those are not published), so its latency is a
-// reference for the route towards Blizzard's US East, not the in-game ping.
-const blizzardHost = "overwatch.blizzard.com"
 
 type ipOptionInformation struct {
 	TTL, TOS, Flags, OptionsSize uint8
@@ -93,21 +87,25 @@ func defaultGateway4() (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-// diagnose measures the three legs a game's packets cross — this computer to
-// the router, the ISP's first router, and the route on to Blizzard — before
-// the tunnel is up, and says which one is unstable.
-func diagnose() *series {
+// phoneHotspots are the router addresses iPhones and Android phones use when
+// sharing their mobile connection.
+var phoneHotspots = []netip.Addr{netip.MustParseAddr("172.20.10.1"), netip.MustParseAddr("192.168.43.1")}
+
+// diagnose measures the two legs a game's packets cross before they leave
+// the ISP — this computer to the router, and on to the ISP's first router —
+// before the tunnel is up, and says which one is unstable.
+func diagnose() {
 	const samples, interval = 60, 250 * time.Millisecond
 	fmt.Printf("网络诊断（约 %d 秒，加 -diag=false 可跳过）…\n", samples*int(interval)/int(time.Second)+3)
 	h, _, _ := icmpCreateFile.Call()
 	if h == uintptr(windows.InvalidHandle) {
 		fmt.Println("无法诊断：ICMP 不可用。")
-		return nil
+		return
 	}
 	defer icmpCloseHandle.Call(h)
 
 	gwAddr, wifi := defaultGateway4()
-	var gw, isp, target *series
+	var gw, isp *series
 	var ispAddr netip.Addr
 	if gwAddr.IsValid() && !gwAddr.IsUnspecified() {
 		gw = &series{name: "电脑 → 路由器 " + gwAddr.String()}
@@ -119,14 +117,6 @@ func diagnose() *series {
 				isp, ispAddr = &series{name: "→ 运营商 " + from.String()}, from
 			}
 			break
-		}
-	}
-	if ips, err := net.LookupIP(blizzardHost); err == nil {
-		for _, ip := range ips {
-			if ip.To4() != nil {
-				target = &series{name: "→ 暴雪（美东）"}
-				break
-			}
 		}
 	}
 
@@ -153,86 +143,9 @@ func diagnose() *series {
 		wg.Add(1)
 		go icmpSeries(isp, ispAddr)
 	}
-	if target != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// Blizzard does not answer pings; a TLS hello times the round
-			// trip instead. Half the samples, to stay polite.
-			tick := time.NewTicker(2 * interval)
-			defer tick.Stop()
-			for i := 0; i < samples/2; i++ {
-				target.sample()
-				<-tick.C
-			}
-		}()
-	}
 	wg.Wait()
 
 	fmt.Println()
-	fmt.Print(report([]*series{gw, isp, target}, gw, isp, target, wifi))
-	fmt.Println()
-	return target
-}
-
-// sample times one round trip to Blizzard: from sending a TLS hello to the
-// first byte of the answer. A TCP handshake alone would not do, because WARP
-// completes handshakes at its own edge, in a few milliseconds, whatever the
-// distance to the real server.
-func (s *series) sample() {
-	s.sent++
-	c, err := net.DialTimeout("tcp4", blizzardHost+":443", time.Second)
-	if err != nil {
-		return
-	}
-	defer c.Close()
-	tc := &timedConn{Conn: c}
-	c.SetDeadline(time.Now().Add(time.Second))
-	tls.Client(tc, &tls.Config{ServerName: blizzardHost}).Handshake()
-	if !tc.answered.IsZero() {
-		s.rtts = append(s.rtts, tc.answered.Sub(tc.sent))
-	}
-}
-
-// timedConn notes when the first bytes went out and when the first came back.
-type timedConn struct {
-	net.Conn
-	sent, answered time.Time
-}
-
-func (c *timedConn) Write(b []byte) (int, error) {
-	if c.sent.IsZero() {
-		c.sent = time.Now()
-	}
-	return c.Conn.Write(b)
-}
-
-func (c *timedConn) Read(b []byte) (int, error) {
-	n, err := c.Conn.Read(b)
-	if n > 0 && c.answered.IsZero() {
-		c.answered = time.Now()
-	}
-	return n, err
-}
-
-// compareWarp measures the same Blizzard server through the tunnel and sets
-// the result beside the direct measurement from diagnose.
-func compareWarp(direct *series) {
-	if direct == nil || len(direct.rtts) == 0 {
-		return
-	}
-	fmt.Println("对比：经 WARP 再测暴雪（约 8 秒）…")
-	via := &series{name: "经 WARP"}
-	for i := 0; i < 16; i++ {
-		via.sample()
-		time.Sleep(500 * time.Millisecond)
-	}
-	if len(via.rtts) == 0 {
-		fmt.Println("   经 WARP 连不上暴雪。")
-		return
-	}
-	d, w := direct.stats(), via.stats()
-	fmt.Printf("   直连      %s\n   经 WARP   %s\n", d, w)
-	fmt.Println("   " + compareVerdict(d, w))
+	fmt.Print(report(gw, isp, wifi, slices.Contains(phoneHotspots, gwAddr)))
 	fmt.Println()
 }

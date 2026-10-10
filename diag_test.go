@@ -44,32 +44,23 @@ func TestStats(t *testing.T) {
 }
 
 func TestVerdict(t *testing.T) {
-	ok, gwBad, ispBad, bliz, blizBad := steady("gw", 2, 60), jittery("gw", 60), lossy("isp", 8, 60, 12), steady("b", 70, 30), lossy("b", 70, 30, 3)
+	ok, gwBad, ispBad := steady("gw", 2, 60), jittery("gw", 60), lossy("isp", 8, 60, 12)
 	cases := []struct {
-		gw, isp, target *series
-		wifi            bool
-		want            string
+		gw, isp       *series
+		wifi, hotspot bool
+		want          string
 	}{
-		{gwBad, ok, blizBad, true, "Wi-Fi"},
-		{ok, ispBad, blizBad, false, "运营商接入"},
-		{ok, ok, blizBad, false, "WARP 加速可能有帮助"},
-		{ok, ispBad, bliz, false, "三段都正常"}, // a hop that rate-limits pings alone is not a fault
-		{ok, nil, nil, false, "没测到"},
-		{&series{name: "gw", sent: 60}, ok, bliz, false, "三段都正常"}, // silent router is unmeasured
+		{gwBad, ok, true, false, "Wi-Fi"},
+		{ok, ispBad, false, false, "运营商接入"},
+		{ok, ok, true, true, "手机热点"},
+		{ok, ok, false, false, "都正常"},
+		{ok, nil, false, false, "都正常"},
+		{&series{name: "gw", sent: 60}, nil, false, false, "没法判断"}, // silent router is unmeasured
 	}
 	for i, c := range cases {
-		got := strings.Join(verdict(c.gw, c.isp, c.target, c.wifi), "\n")
+		got := strings.Join(verdict(c.gw, c.isp, c.wifi, c.hotspot), "\n")
 		if !strings.Contains(got, c.want) {
 			t.Errorf("case %d: want %q in\n%s", i, c.want, got)
 		}
-	}
-}
-
-func TestCompareVerdict(t *testing.T) {
-	good, bad := steady("", 20, 10).stats(), lossy("", 20, 10, 2).stats()
-	if !strings.Contains(compareVerdict(bad, good), "WARP 更稳") ||
-		!strings.Contains(compareVerdict(good, bad), "直连更好") ||
-		!strings.Contains(compareVerdict(good, good), "差不多") {
-		t.Fatal("compare verdict")
 	}
 }

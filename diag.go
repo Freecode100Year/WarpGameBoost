@@ -73,10 +73,10 @@ func (st stats) String() string {
 		st.avg.Milliseconds(), st.jitter.Milliseconds(), st.max.Milliseconds(), st.loss*100)
 }
 
-// verdict turns the three hops into advice. gw is the router, isp the first
-// public hop, target a Blizzard server; any may be nil when it could not be
-// found or measured.
-func verdict(gw, isp, target *series, wifi bool) []string {
+// verdict turns the two measured legs into advice. gw is the router, isp the
+// first public hop; either may be nil when it could not be found. hotspot is
+// set when the router is a phone sharing its mobile connection.
+func verdict(gw, isp *series, wifi, hotspot bool) []string {
 	// A hop that never answered is unmeasured, not broken: plenty of
 	// routers ignore pings altogether.
 	measured := func(s *series) bool { return s != nil && len(s.rtts) > 0 }
@@ -97,47 +97,26 @@ func verdict(gw, isp, target *series, wifi bool) []string {
 			lines = append(lines, "  · 换一根网线或换个路由器口试试；重启路由器")
 		}
 		return append(lines, "  · 家里有人在下载、看视频、传文件时最明显：路由器有 SQM/QoS 就打开")
-	case bad(target, false) && bad(isp, true):
+	case hotspot:
+		return []string{
+			"你在用手机热点：手机网络本身就比宽带多几十毫秒，延迟也时高时低，WARP 改变不了。",
+			"  · 打游戏尽量用家里的宽带（网线最好，其次 Wi-Fi）",
+		}
+	case bad(isp, true):
 		return []string{
 			"问题在运营商接入：路由器正常，但出了家门到运营商的第一段就不稳。",
 			"  · WARP 加速的流量也要先经过这一段，帮不上；可以打电话让运营商查线路，或换运营商",
 		}
-	case bad(target, false):
-		return []string{
-			"问题在运营商到暴雪的线路：家里和运营商接入都正常，往后才不稳。",
-			"  · 这种情况 WARP 加速可能有帮助：开和不开各打几局，用游戏里的网络图（Ctrl+Shift+N）对比",
-		}
-	case !measured(target):
-		return []string{"家里网络和运营商接入正常；暴雪服务器没测到，无法判断后面的线路。"}
+	case !measured(gw) && !measured(isp):
+		return []string{"路由器和运营商都不回应 ping，没法判断。"}
 	default:
-		return []string{
-			"三段都正常，网络本身没有明显问题。",
-			"  · 游戏里仍然卡，可能是游戏服务器或本机（后台下载、同步、杀毒扫描）",
-			"  · 不一定需要加速；下面会经 WARP 再测一次，对比后再决定",
-		}
+		return []string{"家里网络和运营商接入都正常。游戏里仍然卡，就开着加速和不开各打几局，用网络图（Ctrl+Shift+N）对比。"}
 	}
 }
 
-// compareVerdict weighs the direct route against WARP the way a game would:
-// loss and jitter first, then latency.
-func compareVerdict(direct, warp stats) string {
-	score := func(st stats) time.Duration {
-		return st.avg + 2*st.jitter + time.Duration(st.loss*1000)*time.Millisecond
-	}
-	d, w := score(direct), score(warp)
-	switch {
-	case w+5*time.Millisecond < d:
-		return "WARP 更稳，建议开着加速打游戏。"
-	case d+5*time.Millisecond < w:
-		return "直连更好：WARP 绕远了。建议关掉加速直接玩。"
-	default:
-		return "两者差不多，开不开都行；以游戏里的网络图（Ctrl+Shift+N）为准。"
-	}
-}
-
-func report(hops []*series, gw, isp, target *series, wifi bool) string {
+func report(gw, isp *series, wifi, hotspot bool) string {
 	var b strings.Builder
-	for _, s := range hops {
+	for _, s := range []*series{gw, isp} {
 		if s == nil {
 			continue
 		}
@@ -148,7 +127,7 @@ func report(hops []*series, gw, isp, target *series, wifi bool) string {
 		fmt.Fprintf(&b, "   %-26s %s\n", s.name, s.stats())
 	}
 	b.WriteString("\n")
-	for _, l := range verdict(gw, isp, target, wifi) {
+	for _, l := range verdict(gw, isp, wifi, hotspot) {
 		b.WriteString(l + "\n")
 	}
 	return b.String()
