@@ -47,7 +47,7 @@ var (
 	verbose  = flag.Bool("v", false, "显示 WireGuard 调试日志")
 	showVer  = flag.Bool("version", false, "显示版本号后退出")
 	diag     = flag.Bool("diag", true, "启动时先诊断网络（路由器/运营商/暴雪三段）")
-	v6only   = flag.Bool("v6only", false, "出口只走 IPv6，禁用 IPv4（只有 IPv4 的游戏，如守望先锋，会连不上）")
+	exitMode = flag.String("exit", "ipv4", "出口：ipv4 = 仅 IPv4，IPv6 禁用（默认）；ipv6 = 仅 IPv6，IPv4 禁用；dual = 都走 WARP")
 	dnsMode  = flag.String("dns", "malware", "DNS：malware = Cloudflare 阻止恶意软件（1.1.1.2）；system = 保持系统设置（仅流量）")
 )
 
@@ -116,13 +116,22 @@ func run() int {
 		saveAccount(acctPath, acct)
 	}
 
+	if *exitMode != "ipv4" && *exitMode != "ipv6" && *exitMode != "dual" {
+		fmt.Println("-exit 只能是 ipv4、ipv6 或 dual")
+		return 1
+	}
 	if *dnsMode != "malware" && *dnsMode != "system" {
 		fmt.Println("-dns 只能是 malware 或 system")
 		return 1
 	}
+	// Another VPN underneath would nest one tunnel in the other and double
+	// the latency, so disconnect what can be disconnected first.
+	for _, d := range disconnectVPNs() {
+		fmt.Println("已断开 VPN：" + d)
+	}
 	if name := otherVPN(); name != "" {
-		fmt.Printf("检测到另一个 VPN 正在连接：%s\n", name)
-		fmt.Println("两个同时开会变成隧道套隧道，延迟翻倍。请先断开它（官方 WARP 客户端点“断开连接”），再运行本程序。")
+		fmt.Printf("还有一个 VPN 正在连接，无法自动断开：%s\n", name)
+		fmt.Println("两个同时开会变成隧道套隧道，延迟翻倍。请手动断开它，再运行本程序。")
 		return 1
 	}
 	physIndex6 = defaultInterface(winipcfg.AddressFamily(windows.AF_INET6), 0)
@@ -137,9 +146,8 @@ func run() int {
 		physIndex4 = defaultInterface(winipcfg.AddressFamily(windows.AF_INET), 0)
 	}
 
-	var blizzard *series
 	if *diag {
-		blizzard = diagnose()
+		diagnose()
 	}
 
 	results := optimize(acct, "")
@@ -176,10 +184,10 @@ func run() int {
 	if *verbose {
 		fmt.Println(time.Now().Format("15:04:05.000"), "开始验证")
 	}
-	// Verify over the exit that must work: IPv6 with -v6only, else IPv4 (the
-	// game's). IPv6 is then checked once more, but its absence only warns.
+	// Verify over the exit that must work (IPv4 unless -exit ipv6), then that
+	// a blocked family is refused. With -exit dual a missing IPv6 only warns.
 	primary := "tcp4"
-	if *v6only {
+	if *exitMode == "ipv6" {
 		primary = "tcp6"
 	}
 	trace := warpTrace(primary, 3)
@@ -187,41 +195,46 @@ func run() int {
 		fmt.Println("隧道已建立，但验证失败：", strings.TrimSpace(trace))
 		return 1
 	}
-	exit4, exit6 := traceField(trace, "ip"), ""
-	if *v6only {
-		exit4, exit6 = "", exit4
-	} else if t6 := warpTrace("tcp6", 2); strings.Contains(t6, "warp=on") {
-		exit6 = traceField(t6, "ip")
-	}
-	if *v6only {
+	exitIP := traceField(trace, "ip")
+	exit6 := ""
+	switch *exitMode {
+	case "dual":
+		if t6 := warpTrace("tcp6", 2); strings.Contains(t6, "warp=on") {
+			exit6 = traceField(t6, "ip")
+		}
+	case "ipv4":
+		if _, ok := tcpPing("[2606:4700:4700::1111]:443"); ok {
+			fmt.Println("IPv6 仍然可以访问，禁用失败。")
+			return 1
+		}
+	case "ipv6":
 		if _, ok := tcpPing("1.1.1.1:443"); ok {
 			fmt.Println("IPv4 仍然可以访问，禁用失败。")
 			return 1
 		}
-		if !strings.Contains(traceField(trace, "ip"), ":") {
+		if !strings.Contains(exitIP, ":") {
 			fmt.Println("出口不是 IPv6：", strings.TrimSpace(trace))
 			return 1
 		}
 	}
 	fmt.Printf("\n✅ 加速已开启：本机全部网络（包括游戏）经 WARP 入口 %s\n", t.endpoint())
 	switch {
-	case *v6only:
-		fmt.Printf("   出口：仅 IPv6 %s（IPv4 已禁用，只有 IPv4 的网站和游戏会连不上）\n", exit6)
+	case *exitMode == "ipv4":
+		fmt.Printf("   出口：仅 IPv4 %s（IPv6 已禁用）\n", exitIP)
+	case *exitMode == "ipv6":
+		fmt.Printf("   出口：仅 IPv6 %s（IPv4 已禁用，只有 IPv4 的网站和游戏会连不上）\n", exitIP)
 	case exit6 == "":
-		fmt.Printf("   出口：IPv4 %s；IPv6 没有通，只能访问 IPv4\n", exit4)
+		fmt.Printf("   出口：IPv4 %s；IPv6 没有通，只能访问 IPv4\n", exitIP)
 	default:
-		fmt.Printf("   出口：IPv4 %s，IPv6 %s\n", exit4, exit6)
+		fmt.Printf("   出口：IPv4 %s，IPv6 %s\n", exitIP, exit6)
 	}
-	if *dnsMode == "malware" {
+	switch {
+	case *dnsMode == "malware":
 		fmt.Println("   DNS：Cloudflare 阻止恶意软件（1.1.1.2），经隧道查询")
-	} else if *v6only {
+	case *exitMode == "ipv6":
 		fmt.Println("   DNS：Cloudflare（2606:4700:4700::1111），经隧道查询")
-	} else {
+	default:
 		fmt.Println("   DNS：保持系统设置（仅流量）")
-	}
-	if !*v6only {
-		fmt.Println()
-		compareWarp(blizzard)
 	}
 	fmt.Println("   现在可以打开游戏。关闭本窗口或按 Ctrl+C 结束加速；输入 r 回车重新优选。")
 	fmt.Println()
@@ -255,14 +268,14 @@ type tunnel struct {
 	mu   sync.Mutex
 	ep   string
 
-	reject *v4Reject // set with -v6only
+	reject *familyReject // set unless -exit dual
 }
 
-// refreshDNS keeps the IPv4 DNS servers let through -v6only in step with the
-// network Windows is on.
+// refreshDNS keeps the system DNS servers let through a blocked family in step
+// with the network Windows is on.
 func (t *tunnel) refreshDNS() {
 	if t.reject != nil {
-		t.reject.setAllowed(systemDNS4(t.luid))
+		t.reject.setAllowed(systemDNS(t.luid, t.reject.block))
 	}
 }
 
@@ -289,11 +302,15 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 		level = device.LogLevelVerbose
 	}
 	var dev tun.Device = tdev
-	if *v6only {
-		t.reject = &v4Reject{Device: tdev}
-		t.reject.setAllowed(systemDNS4(t.luid))
+	if *exitMode != "dual" {
+		block := 6
+		if *exitMode == "ipv6" {
+			block = 4
+		}
+		t.reject = &familyReject{Device: tdev, block: block}
+		t.refreshDNS()
 		if *verbose {
-			fmt.Println("经隧道放行的 IPv4 DNS：", systemDNS4(t.luid))
+			fmt.Printf("经隧道放行的 IPv%d DNS：%v\n", block, systemDNS(t.luid, block))
 		}
 		dev = t.reject
 	}
@@ -372,9 +389,10 @@ func (t *tunnel) configure(acct *Account) error {
 	// Windows keeps its own settings (traffic only): a resolver on the local
 	// network stays local, one on the internet is reached through the tunnel.
 	//
-	// -v6only always needs a resolver on the adapter, IPv6 only: Windows hands
-	// out IPv6 addresses for a name only when the interface the query went out
-	// on has IPv6, which on an IPv4-only network is never the real adapter.
+	// -exit ipv6 always needs a resolver on the adapter, IPv6 only: Windows
+	// hands out IPv6 addresses for a name only when the interface the query
+	// went out on has IPv6, which on an IPv4-only network is never the real
+	// adapter. -exit ipv4 gives the adapter IPv4 resolvers only.
 	v4dns, v6dns := tunnelDNS()
 	if len(v4dns) > 0 {
 		if err := t.luid.SetDNS(windows.AF_INET, v4dns, nil); err != nil {
@@ -391,10 +409,13 @@ func (t *tunnel) configure(acct *Account) error {
 		{Destination: netip.MustParsePrefix("128.0.0.0/1"), NextHop: netip.IPv4Unspecified()},
 		{Destination: netip.MustParsePrefix("::/1"), NextHop: netip.IPv6Unspecified()},
 		{Destination: netip.MustParsePrefix("8000::/1"), NextHop: netip.IPv6Unspecified()},
+	}
+	if *exitMode != "ipv4" {
 		// Windows only hands out IPv6 addresses for names when some interface
 		// has an IPv6 default route; on an IPv4-only network that has to be
-		// this one, or nothing would try the tunnel's IPv6.
-		{Destination: netip.MustParsePrefix("::/0"), NextHop: netip.IPv6Unspecified()},
+		// this one, or nothing would try the tunnel's IPv6. With -exit ipv4
+		// that is exactly what is wanted, so it is left out.
+		routes = append(routes, &winipcfg.RouteData{Destination: netip.MustParsePrefix("::/0"), NextHop: netip.IPv6Unspecified()})
 	}
 	if err := t.luid.SetRoutes(routes); err != nil {
 		return fmt.Errorf("设置路由：%w", err)
@@ -557,28 +578,30 @@ var (
 // tunnelDNS is what the tunnel adapter's DNS servers should be.
 func tunnelDNS() (v4, v6 []netip.Addr) {
 	switch {
-	case *dnsMode == "malware" && *v6only:
+	case *exitMode == "ipv6" && *dnsMode == "malware":
 		return nil, malwareDNS6
-	case *dnsMode == "malware":
-		return malwareDNS4, malwareDNS6
-	case *v6only:
+	case *exitMode == "ipv6":
 		return nil, plainDNS6
+	case *dnsMode == "system":
+		return nil, nil
+	case *exitMode == "ipv4":
+		return malwareDNS4, nil
 	}
-	return nil, nil
+	return malwareDNS4, malwareDNS6
 }
 
 func pingTarget() string {
-	if *v6only {
+	if *exitMode == "ipv6" {
 		return "[2606:4700:4700::1111]:443"
 	}
 	return "1.1.1.1:443"
 }
 
-// systemDNS4 lists the IPv4 DNS servers Windows is using. With -v6only they
-// stay reachable through the tunnel, or names would stop resolving on networks
-// that hand out a public resolver.
-func systemDNS4(skip winipcfg.LUID) []netip.Addr {
-	adapters, err := winipcfg.GetAdaptersAddresses(windows.AF_INET, winipcfg.GAAFlagDefault)
+// systemDNS lists the DNS servers of one family (4 or 6) Windows is using.
+// When that family is blocked they stay reachable through the tunnel, or names
+// would stop resolving on networks that hand out a public resolver.
+func systemDNS(skip winipcfg.LUID, family int) []netip.Addr {
+	adapters, err := winipcfg.GetAdaptersAddresses(windows.AF_UNSPEC, winipcfg.GAAFlagDefault)
 	if err != nil {
 		return nil
 	}
@@ -594,7 +617,7 @@ func systemDNS4(skip winipcfg.LUID) []netip.Addr {
 				continue
 			}
 			a = a.Unmap()
-			if a.Is4() && !a.IsLoopback() && !a.IsUnspecified() && !seen[a] {
+			if a.Is4() == (family == 4) && !a.IsLoopback() && !a.IsUnspecified() && !seen[a] {
 				seen[a] = true
 				out = append(out, a)
 			}
@@ -670,7 +693,10 @@ func otherVPN() string {
 		}
 		name := ad.FriendlyName() + " " + ad.Description()
 		if strings.Contains(strings.ToLower(strings.ReplaceAll(name, " ", "")), "cloudflarewarp") {
-			return "Cloudflare WARP 官方客户端"
+			if defaults[ad.LUID] {
+				return "Cloudflare WARP 官方客户端"
+			}
+			continue // installed but not carrying traffic
 		}
 		tunnelish := ad.IfType == winipcfg.IfTypePropVirtual || ad.IfType == winipcfg.IfTypeTunnel || ad.IfType == winipcfg.IfTypePPP
 		builtin := false // Windows' own IPv6 transition tunnels are not VPNs

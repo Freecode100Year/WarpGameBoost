@@ -106,3 +106,57 @@ func TestMulticastAndICMPErrorsSilent(t *testing.T) {
 		t.Error("ping must get host unreachable")
 	}
 }
+
+var (
+	local6  = netip.MustParseAddr("2606:4700:110:8000::1")
+	remote6 = netip.MustParseAddr("2606:4700:4700::1111")
+)
+
+func packet6(next byte, dst netip.Addr, payload []byte) []byte {
+	b := make([]byte, 40+len(payload))
+	ip6Header(b, next, local6, dst)
+	copy(b[40:], payload)
+	return b
+}
+
+func TestV6TCPSynGetsReset(t *testing.T) {
+	s := syn(7)
+	drop, r := rejectV6(packet6(6, remote6, s), allowDNS)
+	if !drop || len(r) != 60 {
+		t.Fatalf("drop=%v reply=%d bytes", drop, len(r))
+	}
+	if netip.AddrFrom16([16]byte(r[8:24])) != remote6 || netip.AddrFrom16([16]byte(r[24:40])) != local6 {
+		t.Error("addresses not swapped")
+	}
+	tcp := r[40:]
+	if tcp[13] != 0x14 || binary.BigEndian.Uint32(tcp[8:12]) != 8 {
+		t.Errorf("flags %#x ack %d", tcp[13], binary.BigEndian.Uint32(tcp[8:12]))
+	}
+	if checksum6(6, remote6, local6, tcp) != 0 {
+		t.Error("bad TCP checksum")
+	}
+}
+
+func TestV6UDPAndSilentCases(t *testing.T) {
+	drop, r := rejectV6(packet6(17, remote6, make([]byte, 16)), allowDNS)
+	if !drop || r == nil || r[6] != 58 || r[40] != 1 || r[41] != 4 {
+		t.Fatalf("UDP reply %v", r)
+	}
+	if checksum6(58, remote6, local6, r[40:]) != 0 {
+		t.Error("bad ICMPv6 checksum")
+	}
+	ns := make([]byte, 24)
+	ns[0] = 135
+	if drop, r := rejectV6(packet6(58, remote6, ns), allowDNS); !drop || r != nil {
+		t.Error("neighbour solicitation must be dropped silently")
+	}
+	if drop, r := rejectV6(packet6(17, netip.MustParseAddr("ff02::fb"), make([]byte, 8)), allowDNS); !drop || r != nil {
+		t.Error("multicast must be dropped silently")
+	}
+	if drop, _ := rejectV6(packet(6, remote, syn(1)), allowDNS); drop {
+		t.Error("IPv4 must pass")
+	}
+	if drop, _ := rejectV6(packet6(17, netip.MustParseAddr("2606:4700:4700::1112"), make([]byte, 8)), func(a netip.Addr) bool { return a == netip.MustParseAddr("2606:4700:4700::1112") }); drop {
+		t.Error("allowed DNS must pass")
+	}
+}

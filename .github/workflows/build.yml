@@ -57,14 +57,14 @@ jobs:
           $fv = (Get-Item .\WarpGameBoost.exe).VersionInfo
           "file version $($fv.FileVersion), product $($fv.ProductName) $($fv.ProductVersion)"
           if (-not $fv.FileVersion.StartsWith($env:VERSION_NUM)) { throw "file version $($fv.FileVersion)" }
-      - name: Self-test -v6only with system DNS (the runner has no IPv6, so IPv4 entries)
+      - name: Self-test -exit ipv6 with system DNS (the runner has no IPv6, so IPv4 entries)
         shell: pwsh
         run: |
-          .\WarpGameBoost.exe -selftest -v6only -dns system -diag=false -count 80
-          if ($LASTEXITCODE -ne 0) { throw "selftest -v6only failed" }
+          .\WarpGameBoost.exe -selftest -exit ipv6 -dns system -diag=false -count 80
+          if ($LASTEXITCODE -ne 0) { throw "selftest -exit ipv6 failed" }
           Start-Sleep 2
           if (Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue) { throw "adapter left behind" }
-      - name: Self-test with defaults (diagnosis, both exits, malware-blocking DNS)
+      - name: Self-test with defaults (diagnosis, IPv4-only exit, malware-blocking DNS)
         shell: pwsh
         run: |
           .\WarpGameBoost.exe -selftest -count 80
@@ -77,17 +77,23 @@ jobs:
           function Fail($m) { Get-Content out.txt -Encoding utf8; Stop-Process -Id $p.Id -Force; throw $m }
           foreach ($i in 1..40) { Start-Sleep 2; if ((Get-Content out.txt -Raw -Encoding utf8 -ErrorAction SilentlyContinue) -match '加速已开启|失败') { break } }
           Get-Content out.txt -Encoding utf8
-          $t4 = curl.exe -4 -s -m 10 https://www.cloudflare.com/cdn-cgi/trace
-          $t6 = curl.exe -6 -s -m 10 https://www.cloudflare.com/cdn-cgi/trace
-          "IPv4 exit: $($t4 | Select-String 'ip=|warp=')"
-          "IPv6 exit: $($t6 | Select-String 'ip=|warp=')"
+          $t4 = curl.exe -s -m 10 https://www.cloudflare.com/cdn-cgi/trace
+          "default exit: $($t4 | Select-String 'ip=|warp=')"
           if (-not ($t4 -match 'warp=on')) { Fail "IPv4 exit is not WARP" }
-          if (-not ($t6 -match 'warp=on')) { Fail "IPv6 exit is not WARP" }
+          if (-not ($t4 -match 'ip=\d+\.')) { Fail "exit is not IPv4" }
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $t6 = curl.exe -s -m 10 -w '%{errormsg}' "https://[2606:4700:4700::1111]/cdn-cgi/trace"
+          "IPv6 literal: $t6 ($($sw.ElapsedMilliseconds) ms)"
+          if ($t6 -match 'warp=') { Fail "IPv6 not blocked" }
+          if ($sw.ElapsedMilliseconds -gt 6000) { Fail "IPv6 is dropped, not refused" }
+          $addrs = [Net.Dns]::GetHostAddresses('www.cloudflare.com') -join ' '
+          "getaddrinfo: $addrs"
+          if ($addrs -match ':') { Fail "Windows still hands out IPv6 addresses" }
           # fec0:0:0:ffff::1-3 are the placeholders Windows shows on IPv6
           # interfaces without DNS servers.
           $dns = (Get-DnsClientServerAddress -InterfaceAlias WarpGameBoost).ServerAddresses | Where-Object { $_ -notlike 'fec0:0:0:ffff::*' }
           "adapter DNS servers: [$($dns -join ', ')]"
-          if (($dns -join ',') -ne '1.1.1.2,1.0.0.2,2606:4700:4700::1112,2606:4700:4700::1002') { Fail "unexpected adapter DNS: $dns" }
+          if (($dns -join ',') -ne '1.1.1.2,1.0.0.2') { Fail "unexpected adapter DNS: $dns" }
           # The system resolver (no -Server) must be the malware-blocking one:
           # Cloudflare's test name resolves to 0.0.0.0 there and normally elsewhere.
           Clear-DnsClientCache
@@ -96,9 +102,8 @@ jobs:
           "malware.testcategory.com -> $blocked; www.blizzard.com -> $normal"
           if ($blocked -ne '0.0.0.0') { Fail "malware name not blocked" }
           if (-not $normal) { Fail "name resolution broken" }
-          $addrs = [Net.Dns]::GetHostAddresses('www.cloudflare.com') -join ' '
-          "getaddrinfo: $addrs"
-          if ($addrs -notmatch ':') { Fail "Windows does not hand out IPv6 addresses" }
+          $iwr = (Invoke-WebRequest https://github.com -UseBasicParsing -TimeoutSec 15).StatusCode
+          "Invoke-WebRequest github.com: $iwr"
           Stop-Process -Id $p.Id -Force
           Start-Sleep 3
           if (Get-NetAdapter -Name WarpGameBoost -ErrorAction SilentlyContinue) { throw "adapter left behind after kill" }
@@ -109,6 +114,24 @@ jobs:
           $t = (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 10).Content
           if ($t -notmatch 'warp=off') { throw "network not restored: $t" }
           "network restored: warp=off"
+      - name: Disconnects a running official WARP client first
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://1111-releases.cloudflareclient.com/windows/Cloudflare_WARP_Release-x64.msi -OutFile warp.msi
+          Start-Process msiexec -ArgumentList '/i','warp.msi','/qn','/norestart' -Wait
+          $cli = "$env:ProgramFiles\Cloudflare\Cloudflare WARP\warp-cli.exe"
+          foreach ($i in 1..30) { Start-Sleep 2; $st = & $cli --accept-tos status 2>&1 | Out-String; if ($st -notmatch 'Unable to connect|daemon') { break } }
+          & $cli --accept-tos registration new
+          & $cli --accept-tos connect
+          foreach ($i in 1..30) { Start-Sleep 2; $st = & $cli --accept-tos status | Out-String; if ($st -match 'Connected' -and $st -notmatch 'Disconnected') { break } }
+          "official client before: $($st.Trim())"
+          if ($st -notmatch 'Connected' -or $st -match 'Disconnected') { throw "could not connect the official client for the test" }
+          .\WarpGameBoost.exe -selftest -diag=false -count 80 | Tee-Object -Variable out
+          if ($LASTEXITCODE -ne 0) { throw "selftest with the official client connected failed" }
+          if (-not ($out -match '已断开 VPN：Cloudflare WARP')) { throw "official client was not reported as disconnected" }
+          $st = & $cli --accept-tos status | Out-String
+          "official client after: $($st.Trim())"
+          if ($st -notmatch 'Disconnected') { throw "official client still connected" }
       - name: Package
         shell: pwsh
         run: |
