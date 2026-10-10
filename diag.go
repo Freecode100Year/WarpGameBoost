@@ -105,7 +105,7 @@ func verdict(gw, isp, target *series, wifi bool) []string {
 	case bad(target, false):
 		return []string{
 			"问题在运营商到暴雪的线路：家里和运营商接入都正常，往后才不稳。",
-			"  · 这种情况 WARP 加速可能有帮助：守望先锋只有 IPv4，请用 -v6only=false 运行，开和不开各打几局对比",
+			"  · 这种情况 WARP 加速可能有帮助：开和不开各打几局，用游戏里的网络图（Ctrl+Shift+N）对比",
 		}
 	case !measured(target):
 		return []string{"家里网络和运营商接入正常；暴雪服务器没测到，无法判断后面的线路。"}
@@ -113,7 +113,7 @@ func verdict(gw, isp, target *series, wifi bool) []string {
 		return []string{
 			"三段都正常，网络本身没有明显问题。",
 			"  · 游戏里仍然卡，可能是游戏服务器或本机（后台下载、同步、杀毒扫描）",
-			"  · 不一定需要加速；想试试 WARP，守望先锋请用 -v6only=false",
+			"  · 不一定需要加速；下面会经 WARP 再测一次，对比后再决定",
 		}
 	}
 }

@@ -41,13 +41,14 @@ const adapterName = "WarpGameBoost"
 var version = "dev"
 
 var (
-	allowV4  = flag.Bool("ipv4", false, "也使用 IPv4 入口（默认只用 IPv6 入口）")
+	allowV4  = flag.Bool("ipv4", true, "同时优选 IPv4 入口（默认开启；-ipv4=false 只用 IPv6 入口）")
 	count    = flag.Int("count", 200, "每次优选测试的入口数量")
 	selftest = flag.Bool("selftest", false, "连接、验证后立即退出（用于自动测试）")
 	verbose  = flag.Bool("v", false, "显示 WireGuard 调试日志")
 	showVer  = flag.Bool("version", false, "显示版本号后退出")
 	diag     = flag.Bool("diag", true, "启动时先诊断网络（路由器/运营商/暴雪三段）")
-	v6only   = flag.Bool("v6only", true, "出口只走 IPv6，禁用 IPv4；只有 IPv4 的游戏（如守望先锋）要加 -v6only=false")
+	v6only   = flag.Bool("v6only", false, "出口只走 IPv6，禁用 IPv4（只有 IPv4 的游戏，如守望先锋，会连不上）")
+	dnsMode  = flag.String("dns", "malware", "DNS：malware = Cloudflare 阻止恶意软件（1.1.1.2）；system = 保持系统设置（仅流量）")
 )
 
 // physIndex is the interface the tunnel's own UDP packets leave through; probes
@@ -115,11 +116,15 @@ func run() int {
 		saveAccount(acctPath, acct)
 	}
 
+	if *dnsMode != "malware" && *dnsMode != "system" {
+		fmt.Println("-dns 只能是 malware 或 system")
+		return 1
+	}
 	physIndex6 = defaultInterface(winipcfg.AddressFamily(windows.AF_INET6), 0)
-	if physIndex6 == 0 && !*allowV4 {
+	if physIndex6 == 0 {
 		// Without IPv6 the only way in is IPv4; say so and carry on rather than
 		// make the user restart with a flag.
-		fmt.Println("本机没有 IPv6 网络，改用 IPv4 入口。")
+		fmt.Println("本机没有 IPv6 网络，只用 IPv4 入口。")
 		fmt.Println()
 		*allowV4 = true
 	}
@@ -166,10 +171,22 @@ func run() int {
 	if *verbose {
 		fmt.Println(time.Now().Format("15:04:05.000"), "开始验证")
 	}
-	trace := warpTrace()
+	// Verify over the exit that must work: IPv6 with -v6only, else IPv4 (the
+	// game's). IPv6 is then checked once more, but its absence only warns.
+	primary := "tcp4"
+	if *v6only {
+		primary = "tcp6"
+	}
+	trace := warpTrace(primary, 3)
 	if !strings.Contains(trace, "warp=on") {
 		fmt.Println("隧道已建立，但验证失败：", strings.TrimSpace(trace))
 		return 1
+	}
+	exit4, exit6 := traceField(trace, "ip"), ""
+	if *v6only {
+		exit4, exit6 = "", exit4
+	} else if t6 := warpTrace("tcp6", 2); strings.Contains(t6, "warp=on") {
+		exit6 = traceField(t6, "ip")
 	}
 	if *v6only {
 		if _, ok := tcpPing("1.1.1.1:443"); ok {
@@ -182,11 +199,22 @@ func run() int {
 		}
 	}
 	fmt.Printf("\n✅ 加速已开启：本机全部网络（包括游戏）经 WARP 入口 %s\n", t.endpoint())
-	if *v6only {
-		fmt.Printf("   出口仅 IPv6（%s），IPv4 已禁用，DNS 经隧道用 Cloudflare。\n", traceField(trace, "ip"))
-		fmt.Println("   只有 IPv4 的网站和游戏会连不上；玩守望先锋请加参数 -v6only=false。")
+	switch {
+	case *v6only:
+		fmt.Printf("   出口：仅 IPv6 %s（IPv4 已禁用，只有 IPv4 的网站和游戏会连不上）\n", exit6)
+	case exit6 == "":
+		fmt.Printf("   出口：IPv4 %s；IPv6 没有通，只能访问 IPv4\n", exit4)
+	default:
+		fmt.Printf("   出口：IPv4 %s，IPv6 %s\n", exit4, exit6)
+	}
+	if *dnsMode == "malware" {
+		fmt.Println("   DNS：Cloudflare 阻止恶意软件（1.1.1.2），经隧道查询")
+	} else if *v6only {
+		fmt.Println("   DNS：Cloudflare（2606:4700:4700::1111），经隧道查询")
 	} else {
-		fmt.Println("   仅流量模式：DNS 保持系统设置。")
+		fmt.Println("   DNS：保持系统设置（仅流量）")
+	}
+	if !*v6only {
 		fmt.Println()
 		compareWarp(blizzard)
 	}
@@ -333,19 +361,26 @@ func (t *tunnel) configure(acct *Account) error {
 			iface.Set()
 		}
 	}
-	// Windows only returns IPv6 addresses for a name when the interface the
-	// query went out on has IPv6. On an IPv4-only network that is never the
-	// real adapter, so with -v6only the tunnel gets Cloudflare's resolver at
-	// its IPv6 addresses, asked through the tunnel.
-	if *v6only {
-		if err := t.luid.SetDNS(windows.AF_INET6, v6DNS, nil); err != nil {
+	// With -dns malware the adapter gets Cloudflare's malware-blocking
+	// resolver; the adapter's metric of 0 makes Windows ask it first, and the
+	// queries travel through the tunnel. With -dns system it gets none and
+	// Windows keeps its own settings (traffic only): a resolver on the local
+	// network stays local, one on the internet is reached through the tunnel.
+	//
+	// -v6only always needs a resolver on the adapter, IPv6 only: Windows hands
+	// out IPv6 addresses for a name only when the interface the query went out
+	// on has IPv6, which on an IPv4-only network is never the real adapter.
+	v4dns, v6dns := tunnelDNS()
+	if len(v4dns) > 0 {
+		if err := t.luid.SetDNS(windows.AF_INET, v4dns, nil); err != nil {
 			return fmt.Errorf("设置 DNS：%w", err)
 		}
 	}
-	// Traffic only: the adapter gets no DNS servers, so Windows keeps resolving
-	// with the system's own DNS settings. Queries to a resolver on the local
-	// network stay local (its on-link route is more specific than the halves
-	// below); queries to a resolver on the internet travel through the tunnel.
+	if len(v6dns) > 0 {
+		if err := t.luid.SetDNS(windows.AF_INET6, v6dns, nil); err != nil {
+			return fmt.Errorf("设置 DNS：%w", err)
+		}
+	}
 	routes := []*winipcfg.RouteData{
 		{Destination: netip.MustParsePrefix("0.0.0.0/1"), NextHop: netip.IPv4Unspecified()},
 		{Destination: netip.MustParsePrefix("128.0.0.0/1"), NextHop: netip.IPv4Unspecified()},
@@ -506,7 +541,26 @@ func (t *tunnel) reoptimize(acct *Account, acctPath string) {
 	saveAccount(acctPath, acct)
 }
 
-var v6DNS = []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}
+// Cloudflare's resolvers: 1.1.1.2 and friends refuse names Cloudflare knows to
+// serve malware; 1.1.1.1 and friends answer everything.
+var (
+	malwareDNS4 = []netip.Addr{netip.MustParseAddr("1.1.1.2"), netip.MustParseAddr("1.0.0.2")}
+	malwareDNS6 = []netip.Addr{netip.MustParseAddr("2606:4700:4700::1112"), netip.MustParseAddr("2606:4700:4700::1002")}
+	plainDNS6   = []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111"), netip.MustParseAddr("2606:4700:4700::1001")}
+)
+
+// tunnelDNS is what the tunnel adapter's DNS servers should be.
+func tunnelDNS() (v4, v6 []netip.Addr) {
+	switch {
+	case *dnsMode == "malware" && *v6only:
+		return nil, malwareDNS6
+	case *dnsMode == "malware":
+		return malwareDNS4, malwareDNS6
+	case *v6only:
+		return nil, plainDNS6
+	}
+	return nil, nil
+}
 
 func pingTarget() string {
 	if *v6only {
@@ -563,19 +617,17 @@ func tcpPing(addr string) (time.Duration, bool) {
 	return time.Since(start), true
 }
 
-func warpTrace() string {
-	client := &http.Client{Timeout: 10 * time.Second}
-	if *v6only {
-		// Go's resolver may hand back only IPv4 addresses here; ask for IPv6.
-		d := &net.Dialer{}
-		client.Transport = &http.Transport{
-			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
-				return d.DialContext(ctx, "tcp6", addr)
-			},
-			ForceAttemptHTTP2: true,
-		}
-	}
-	for i := 0; i < 3; i++ {
+// warpTrace asks Cloudflare how this connection looks from outside, over
+// "tcp4" or "tcp6" (Go's resolver may otherwise hand back one family only).
+func warpTrace(network string, tries int) string {
+	d := &net.Dialer{}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+			return d.DialContext(ctx, network, addr)
+		},
+		ForceAttemptHTTP2: true,
+	}}
+	for i := 0; i < tries; i++ {
 		resp, err := client.Get("https://www.cloudflare.com/cdn-cgi/trace")
 		if err == nil {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
