@@ -120,6 +120,11 @@ func run() int {
 		fmt.Println("-dns 只能是 malware 或 system")
 		return 1
 	}
+	if name := otherVPN(); name != "" {
+		fmt.Printf("检测到另一个 VPN 正在连接：%s\n", name)
+		fmt.Println("两个同时开会变成隧道套隧道，延迟翻倍。请先断开它（官方 WARP 客户端点“断开连接”），再运行本程序。")
+		return 1
+	}
 	physIndex6 = defaultInterface(winipcfg.AddressFamily(windows.AF_INET6), 0)
 	if physIndex6 == 0 {
 		// Without IPv6 the only way in is IPv4; say so and carry on rather than
@@ -638,6 +643,43 @@ func warpTrace(network string, tries int) string {
 			fmt.Println(time.Now().Format("15:04:05.000"), "验证请求失败：", err)
 		}
 		time.Sleep(2 * time.Second)
+	}
+	return ""
+}
+
+// otherVPN names a connected VPN adapter that would carry this program's own
+// tunnel inside it: the official WARP client, or any tunnel adapter holding a
+// default route.
+func otherVPN() string {
+	adapters, err := winipcfg.GetAdaptersAddresses(windows.AF_UNSPEC, winipcfg.GAAFlagDefault)
+	if err != nil {
+		return ""
+	}
+	defaults := map[winipcfg.LUID]bool{}
+	for _, fam := range []winipcfg.AddressFamily{windows.AF_INET, windows.AF_INET6} {
+		rows, _ := winipcfg.GetIPForwardTable2(fam)
+		for i := range rows {
+			if rows[i].DestinationPrefix.PrefixLength <= 1 {
+				defaults[rows[i].InterfaceLUID] = true
+			}
+		}
+	}
+	for _, ad := range adapters {
+		if ad.OperStatus != winipcfg.IfOperStatusUp || ad.FriendlyName() == adapterName {
+			continue
+		}
+		name := ad.FriendlyName() + " " + ad.Description()
+		if strings.Contains(strings.ToLower(strings.ReplaceAll(name, " ", "")), "cloudflarewarp") {
+			return "Cloudflare WARP 官方客户端"
+		}
+		tunnelish := ad.IfType == winipcfg.IfTypePropVirtual || ad.IfType == winipcfg.IfTypeTunnel || ad.IfType == winipcfg.IfTypePPP
+		builtin := false // Windows' own IPv6 transition tunnels are not VPNs
+		for _, w := range []string{"teredo", "6to4", "isatap", "ip-https"} {
+			builtin = builtin || strings.Contains(strings.ToLower(name), w)
+		}
+		if tunnelish && !builtin && defaults[ad.LUID] {
+			return ad.FriendlyName() + "（" + ad.Description() + "）"
+		}
 	}
 	return ""
 }
