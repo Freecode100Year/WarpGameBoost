@@ -366,8 +366,16 @@ func start(acct *Account, results []scored) (*tunnel, error) {
 // traffic through it. Two half routes win over the default route without
 // touching it, so closing the adapter restores the network exactly.
 func (t *tunnel) configure(acct *Account) error {
+	// With -exit ipv4 the adapter gets no IPv6 address: Windows then asks
+	// its resolver (the adapter's, queried first) for IPv4 addresses only,
+	// and programs never try IPv6 at all. IPv6 is still routed here and
+	// refused, in case another adapter's address gets used.
+	family := []string{acct.AddrV4, acct.AddrV6}
+	if *exitMode == "ipv4" {
+		family = family[:1]
+	}
 	var addrs []netip.Prefix
-	for _, s := range []string{acct.AddrV4, acct.AddrV6} {
+	for _, s := range family {
 		if a, err := netip.ParseAddr(s); err == nil {
 			addrs = append(addrs, netip.PrefixFrom(a, a.BitLen()))
 		}
