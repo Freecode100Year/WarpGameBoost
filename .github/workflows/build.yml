@@ -114,6 +114,7 @@ jobs:
           $t = (Invoke-WebRequest https://www.cloudflare.com/cdn-cgi/trace -UseBasicParsing -TimeoutSec 10).Content
           if ($t -notmatch 'warp=off') { throw "network not restored: $t" }
           "network restored: warp=off"
+          exit 0  # curl's expected failure above would otherwise fail the step
       - name: Disconnects a running official WARP client first
         shell: pwsh
         run: |
