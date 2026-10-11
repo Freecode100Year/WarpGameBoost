@@ -41,13 +41,12 @@ const adapterName = "WarpGameBoost"
 var version = "dev"
 
 var (
-	allowV4  = flag.Bool("ipv4", true, "同时优选 IPv4 入口（默认开启；-ipv4=false 只用 IPv6 入口）")
+	allowV4  = flag.Bool("ipv4", false, "同时优选 IPv4 入口（默认只优选 IPv6 入口，本机没有 IPv6 时自动改用 IPv4）")
 	count    = flag.Int("count", 200, "每次优选测试的入口数量")
 	selftest = flag.Bool("selftest", false, "连接、验证后立即退出（用于自动测试）")
 	verbose  = flag.Bool("v", false, "显示 WireGuard 调试日志")
 	showVer  = flag.Bool("version", false, "显示版本号后退出")
-	diag     = flag.Bool("diag", true, "启动时先诊断网络（路由器/运营商/暴雪三段）")
-	exitMode = flag.String("exit", "ipv4", "出口：ipv4 = 仅 IPv4，IPv6 禁用（默认）；ipv6 = 仅 IPv6，IPv4 禁用；dual = 都走 WARP")
+	exitMode = flag.String("exit", "dual", "出口：dual = IPv4 和 IPv6 双栈都走 WARP（默认）；ipv4 = 仅 IPv4，IPv6 禁用；ipv6 = 仅 IPv6，IPv4 禁用")
 	dnsMode  = flag.String("dns", "malware", "DNS：malware = Cloudflare 阻止恶意软件（1.1.1.2）；system = 保持系统设置（仅流量）")
 )
 
@@ -144,10 +143,6 @@ func run() int {
 	}
 	if *allowV4 {
 		physIndex4 = defaultInterface(winipcfg.AddressFamily(windows.AF_INET), 0)
-	}
-
-	if *diag {
-		diagnose()
 	}
 
 	results := optimize(acct, "")
