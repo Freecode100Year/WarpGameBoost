@@ -6,4 +6,8 @@
 - 在注册和断开其他 VPN 之前检查参数，拒绝非正数 `-count`。
 - 默认 IPv6 入口优选、双栈出口和恶意软件 DNS 保持原有设置。
 
-本地构建版本，尚未发布到 GitHub Releases。Windows 真实隧道、管理员提权、DNS 和退出恢复需在 Windows 上实测；详见 TEST_REPORT.md。
+Windows 完整预发布测试已通过：单元测试、程序版本、IPv4/IPv6 出口、双栈 WARP、恶意软件 DNS、强制退出后网卡清理与网络恢复，以及自动断开官方 WARP 客户端。
+
+测试记录：https://github.com/Freecode100Year/WarpGameBoost/actions/runs/40591867418
+
+发布附件由 GitHub Actions 标签构建再次测试生成，附 SHA256SUMS.txt 和构建来源证明。

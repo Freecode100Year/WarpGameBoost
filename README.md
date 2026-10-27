@@ -113,7 +113,7 @@
 
 ## 校验
 
-本次 v0.9.1 为 Linux 交叉编译的本地测试版，尚未上传 Releases，也没有 GitHub 构建证明。实际验证范围及 Windows 实测步骤见 `TEST_REPORT.md`；下述 Actions 验证说明适用于仓库的正式发布流程。
+v0.9.1 已通过 Windows Actions 的完整预发布测试（包括双栈出口、DNS、强制结束后恢复及断开官方 WARP 客户端）。测试记录见 `TEST_REPORT.md`；正式 EXE 由标签构建再次测试、生成并发布。
 
 Releases 里的 exe 由 GitHub Actions 从本仓库源码编译，附构建来源证明：
 

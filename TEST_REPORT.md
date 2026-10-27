@@ -1,7 +1,7 @@
-# WarpGameBoost v0.9.1 本地构建测试报告
+# WarpGameBoost v0.9.1 测试报告
 
 构建日期：2026-10-27。基础提交：0ee9c0d13779c2eedbdc0af22e55fda383e6c9c6（v0.9.0）。
-源码位置：/root/WarpGameBoost，分支 fix/v0.9.1。本次修改尚未推送到 GitHub。
+初始本地源码位置：/root/WarpGameBoost，开发分支 fix/v0.9.1。修复源码已推送到 GitHub。
 
 ## 修复与回归验证
 
@@ -33,14 +33,29 @@ Wintun 0.14.1 原始压缩包 SHA256：
 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
 与仓库 CI 配置一致。amd64 DLL 已嵌入 EXE，源码包同时包含该 DLL、许可证及生成的 Windows 资源对象。
 
-## 未完成的 Windows 运行检查
+## Windows 预发布验证（全部通过）
+
+运行：https://github.com/Freecode100Year/WarpGameBoost/actions/runs/40591867418
+
+测试提交：259067cd5d520fba0faa7405b6176f704958d499。后续发布准备仅更新文档，程序源码相同。
+GitHub Actions windows-latest 的完整流程结果为 success，确认：
+
+- Windows 原生 go vet、完整单元测试及编译通过。
+- 程序 -version 输出和文件版本资源校验通过。
+- 仅 IPv6 出口（system DNS）、仅 IPv4 出口的真实隧道测试通过。
+- 默认双栈出口均为 warp=on，恶意软件 DNS 与常规域名解析测试通过。
+- 强制结束后虚拟网卡清理、DNS 恢复、网络恢复 warp=off 通过。
+- 官方 WARP 客户端已连接时，程序自动断开它并连接自己的隧道通过。
+
+该测试机没有原生 IPv6，因此仍未验证真实 IPv6 入口；Wi-Fi 切换、睡眠唤醒及手动提权窗口也不在此次 CI 验证范围。正式 v0.9.1 标签流程会再次运行上述检查，再自动发布 EXE。
+
+## 初始本地 Wine 检查（历史记录）
 
 Wine 启动命令 `wine WarpGameBoost.exe -version` 退出码 2，Go 运行时在进入 main 前报错：
 `fatal error: bcryptprimitives.dll not found`。
-这是当前 Wine 环境的限制。本报告没有确认 Windows 上的 -version 输出、提权、Wintun 网卡、真实 WARP 连接、DNS、生效后的速度或退出恢复。
-本次 EXE 是本地测试构建，没有 GitHub Actions 来源证明；不得将仓库历史 CI 的结果视为本版本实测结果。
+这是初始本地 Wine 环境的限制，后续已通过上文的 Windows 原生 CI 验证。初始 Linux 交叉编译 EXE 与正式 Release 的 Actions EXE 是不同构建，校验值不可混用。CI 不代表真实游戏速度测量。
 
-请在 Windows 上完成以下实测：
+用户可在自己的 Windows 网络环境复验：
 
 1. 执行 `./WarpGameBoost.exe -version`，确认显示 WarpGameBoost 0.9.1。
 2. 管理员 PowerShell 执行 `./WarpGameBoost.exe -selftest -count 80`，确认退出码 0，且退出后无 WarpGameBoost 网卡。
