@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,10 +41,40 @@ func loadAccount(path string) (*Account, error) {
 		return nil, err
 	}
 	var a Account
-	if err := json.Unmarshal(b, &a); err != nil || a.PrivateKey == "" || a.PeerKey == "" {
+	if err := json.Unmarshal(b, &a); err != nil {
 		return nil, fmt.Errorf("invalid account file")
 	}
+	if err := a.validate(); err != nil {
+		return nil, fmt.Errorf("invalid account file: %w", err)
+	}
 	return &a, nil
+}
+
+// validate checks data before it reaches the scanner or tunnel configuration.
+func (a *Account) validate() error {
+	if a == nil {
+		return fmt.Errorf("missing account")
+	}
+	priv, err := base64.StdEncoding.DecodeString(a.PrivateKey)
+	if err != nil || len(priv) != 32 {
+		return fmt.Errorf("invalid private key")
+	}
+	peer, err := base64.StdEncoding.DecodeString(a.PeerKey)
+	if err != nil || len(peer) != 32 {
+		return fmt.Errorf("invalid peer key")
+	}
+	if _, err := curve25519.X25519(priv, peer); err != nil {
+		return fmt.Errorf("invalid peer key: %w", err)
+	}
+	v4, err := netip.ParseAddr(a.AddrV4)
+	if err != nil || !v4.Is4() || v4.IsUnspecified() || v4.IsMulticast() {
+		return fmt.Errorf("invalid IPv4 address")
+	}
+	v6, err := netip.ParseAddr(a.AddrV6)
+	if err != nil || !v6.Is6() || v6.Is4In6() || v6.IsUnspecified() || v6.IsMulticast() || v6.Zone() != "" {
+		return fmt.Errorf("invalid IPv6 address")
+	}
+	return nil
 }
 
 func saveAccount(path string, a *Account) {
@@ -115,9 +146,13 @@ func register() (*Account, error) {
 		}
 		return strings.Trim(s, "[]")
 	}
-	return &Account{
+	a := &Account{
 		ID: r.ID, Token: r.Token, PrivateKey: base64.StdEncoding.EncodeToString(priv[:]), PeerKey: p.PublicKey,
 		AddrV4: r.Config.Interface.Addresses.V4, AddrV6: r.Config.Interface.Addresses.V6,
 		EndpointV4: hostOnly(p.Endpoint.V4), EndpointV6: hostOnly(p.Endpoint.V6), Ports: p.Endpoint.Ports,
-	}, nil
+	}
+	if err := a.validate(); err != nil {
+		return nil, fmt.Errorf("invalid registration reply: %w", err)
+	}
+	return a, nil
 }

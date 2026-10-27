@@ -113,6 +113,8 @@
 
 ## 校验
 
+本次 v0.9.1 为 Linux 交叉编译的本地测试版，尚未上传 Releases，也没有 GitHub 构建证明。实际验证范围及 Windows 实测步骤见 `TEST_REPORT.md`；下述 Actions 验证说明适用于仓库的正式发布流程。
+
 Releases 里的 exe 由 GitHub Actions 从本仓库源码编译，附构建来源证明：
 
 ```powershell
@@ -140,6 +142,12 @@ go build -trimpath -ldflags "-s -w" -o WarpGameBoost.exe .
 
 版本号显示在窗口标题和第一行，也可以右键 exe →“属性”→“详细信息”查看。
 
+- **v0.9.1**：
+  - 校验缓存及注册返回的 WireGuard 密钥和双栈地址，避免损坏账号进入握手流程。
+  - 修复无地址族或空账号时入口扫描崩溃；无效扫描数量不再发包。
+  - 探测回复必须匹配本次握手的接收索引；忽略延迟旧包后继续等待当前回复，减少优选误判。
+  - 参数校验提前到注册之前，`-count` 必须大于 0。
+  - 补充账号和本地 UDP 探测回归测试。
 - **v0.9.0**：
   - 入口改回原本的 IPv6 优选（没有 IPv6 时自动用 IPv4）；`-ipv4` 可恢复 IPv4、IPv6 一起优选。
   - 出口默认改为 IPv4、IPv6 双栈；`-exit ipv4` 恢复仅 IPv4。

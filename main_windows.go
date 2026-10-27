@@ -103,6 +103,19 @@ func elevate() {
 func run() int {
 	fmt.Printf("WarpGameBoost %s — Cloudflare WARP 游戏加速（IPv6 入口 IP 优选）\n", version)
 	fmt.Println()
+	if *exitMode != "ipv4" && *exitMode != "ipv6" && *exitMode != "dual" {
+		fmt.Println("-exit 只能是 ipv4、ipv6 或 dual")
+		return 1
+	}
+	if *dnsMode != "malware" && *dnsMode != "system" {
+		fmt.Println("-dns 只能是 malware 或 system")
+		return 1
+	}
+	if *count <= 0 {
+		fmt.Println("-count 必须大于 0")
+		return 1
+	}
+
 	dir := filepath.Join(os.Getenv("LOCALAPPDATA"), "WarpGameBoost")
 	acctPath := filepath.Join(dir, "account.json")
 	acct, err := loadAccount(acctPath)
@@ -115,14 +128,6 @@ func run() int {
 		saveAccount(acctPath, acct)
 	}
 
-	if *exitMode != "ipv4" && *exitMode != "ipv6" && *exitMode != "dual" {
-		fmt.Println("-exit 只能是 ipv4、ipv6 或 dual")
-		return 1
-	}
-	if *dnsMode != "malware" && *dnsMode != "system" {
-		fmt.Println("-dns 只能是 malware 或 system")
-		return 1
-	}
 	// Another VPN underneath would nest one tunnel in the other and double
 	// the latency, so disconnect what can be disconnected first.
 	for _, d := range disconnectVPNs() {

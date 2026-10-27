@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"encoding/base64"
@@ -49,6 +50,9 @@ const probesPerEndpoint = 5
 // scan probes about `count` random endpoints of the allowed families and
 // returns the reachable ones, best first.
 func scan(a *Account, count int, v4, v6 bool, current string) []scored {
+	if count <= 0 || (!v4 && !v6) || a.validate() != nil {
+		return nil
+	}
 	priv, _ := base64.StdEncoding.DecodeString(a.PrivateKey)
 	peer, _ := base64.StdEncoding.DecodeString(a.PeerKey)
 	var cands []string
@@ -124,8 +128,20 @@ func probeEndpoint(endpoint string, priv, peer []byte) (scored, bool) {
 			return scored{}, false
 		}
 		conn.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
-		n, err := conn.Read(buf)
-		if err != nil || n != 92 || buf[0] != 2 {
+		matched := false
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				break
+			}
+			// Match the complete message type and the receiver index to this
+			// initiation. Delayed responses belong to earlier probes.
+			if n == 92 && binary.LittleEndian.Uint32(buf[:4]) == 2 && bytes.Equal(buf[8:12], msg[4:8]) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			continue
 		}
 		rtt := time.Since(start)
